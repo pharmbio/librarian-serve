@@ -1,13 +1,13 @@
-# Librarian on SciLifeLab Serve
+# Librarian on SciLifeLab Serve Platform
 
 > [!IMPORTANT]
-> This is a private repository. I did not make a fork or a branch because I was not sure that is what we want at the end.
+> This is a private repository. I did not make a fork or a branch because I was not sure that is what we want at the end. It will be made public later.
 
-> Our goal is to host an instance of Librarian on our SciLifeLab Serve platform, backed by our locally hosted LLM and a user-friendly interface.
+> Our goal is to host an instance of EBML's Librarian on SciLifeLab Serve platform, with our locally hosted LLM and a user-friendly interface.
 
 ## Overview
 
-Starting from the original Librarian repository, we built three services, one per folder. Each has its own Docker image and runs on its own, and they talk to each other only through APIs.
+Starting from the original Librarian repository, we built three services, one per folder. Each has its own Docker image and runs on its own, and they talk to each other only through APIs. 
 
 | Service     | Port | Role |
 |-------------|------|------|
@@ -22,27 +22,27 @@ flowchart LR
     accTitle: Librarian service architecture
     accDescr: The browser talks only to app. app calls librarian over HTTP to answer questions and db over HTTP to store users, sessions, queries and runs; librarian calls the LLM and Europe PMC, and only db reads and writes the SQLite file.
 
-    browser(["👤 Browser"])
+    browser(["Browser"])
 
     subgraph app_service ["🖥️ app :8080"]
-        web_ui["🎨 Web UI<br/>static/"]
-        app_api["⚙️ API<br/>main.py"]
-        librarian_client["🔌 librarian_client.py"]
-        db_client["🔌 db_client.py"]
+        web_ui["Web UI<br/>static/"]
+        app_api["API<br/>main.py"]
+        librarian_client["librarian_client.py"]
+        db_client["db_client.py"]
     end
 
-    subgraph librarian_service ["🧠 librarian :7680"]
-        process_api["⚙️ /api/v1/process"]
-        agent["🧠 Librarian agent"]
+    subgraph librarian_service ["librarian :7680"]
+        process_api["/api/v1/process"]
+        agent["Librarian agent"]
     end
 
-    subgraph db_service ["💾 db :8000"]
-        rest_api["⚙️ /api/v1 REST API"]
-        sqlite[("💾 SQLite<br/>repur-db-data volume")]
+    subgraph db_service ["db :8000"]
+        rest_api["/api/v1 REST API"]
+        sqlite[("SQLite<br/>repur-db-data volume")]
     end
 
-    llm["☁️ LLM backend"]
-    europe_pmc["🔗 Europe PMC"]
+    llm["LLM backend"]
+    europe_pmc["Europe PMC"]
 
     browser -->|"HTTPS + cookie"| web_ui
     web_ui --> app_api
@@ -71,23 +71,24 @@ flowchart LR
 Each service reads its configuration from its own `.env` file. Every variable is listed, with comments, in that folder's `.env.example`.
 
 ```bash
+# Clone repo and go to cloned folder
 git clone https://github.com/pharmbio/serve-librarian.git
 cd serve-librarian 
 
-# Copy environment file example and make to be real .env, you have to fill-in some fields (read .env file for details)
+# Copy environment file example and make to be real .env by filling in some fields (read each .env file for details)
 cp db/.env.example db/.env
 cp librarian/.env.example librarian/.env    
 cp app/.env.example app/.env
 ```
 
 To protect the internal APIs:
-- set `API_KEY` in `db/.env` and the same value as `DB_API_KEY` in `app/.env`.
+- set `API_KEY` in `db/.env` and the same value as `DB_API_KEY` in `app/.env`. 
 - set `API_KEY` in `librarian/.env` with `LIBRARIAN_API_KEY` in `app/.env`. 
-- Generate each with `openssl rand -hex 32` or any alternative you want. 
-- If you leave them emptym, the APIs accept any caller that reach them.
+- Generate each with `openssl rand -hex 32` or any alternative you want. The API_keys of the correspoding services have to match each other.
+- If you leave them empty, the APIs accept any caller that reach them. This is fine for localhost, by not good for production hosting.
 
 ### Step 2:
-Build each image from its own folder:
+Build each image separately:
 
 ```bash
 docker build -t librarian-db db/
