@@ -1,0 +1,20 @@
+[project]
+name = "librarian"
+version = "0.3.0"
+description = "A life-sciences knowledge layer for AI agents: natural-language questions to ranked Europe PMC evidence passages."
+readme = "README.MD"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "requests>=2.31",   # Europe PMC HTTP calls + OpenAI-compatible LLM client
+    "bm25s>=0.2",       # BM25 paragraph ranking
+    "pysbd>=0.3",       # sentence segmentation for evidence extraction
+    "python-dotenv>=1.0", # load LLM_* config from a .env file
+    "PyStemmer>=2.2",   # Snowball stemming for BM25 paragraph scoring
+    "mashumaro[toml]>=3.22", # dataclass <-> TOML parsing for librarian/config.toml
+    "fastapi>=0.110",   # HTTP API (orchestrator.py)
+    "uvicorn>=0.27",    # ASGI server for the HTTP API
+]
+
+[tool.uv]
+package = false

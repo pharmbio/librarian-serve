@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Librarian</title>
+  <link rel="icon" href="/logo.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script>
+    try { document.documentElement.dataset.theme = localStorage.getItem("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
+    catch { document.documentElement.dataset.theme = "light"; }
+  </script>
+  <script type="module" src="/login.js"></script>
+</head>
+<body>
+  <div class="auth">
+    <header class="brand">
+      <img class="logo" src="/logo.png" alt="">
+      EMBL AI Librarian
+    </header>
+
+    <main class="auth-center">
+      <h1>A life-sciences knowledge layer for AI agents</h1>
+      <form class="auth-card" id="auth-form" novalidate>
+        <h2 id="auth-title">Welcome back</h2>
+        <div class="tabs" role="tablist">
+          <button type="button" class="active" data-mode="login" role="tab">Sign in</button>
+          <button type="button" data-mode="register" role="tab">Create account</button>
+        </div>
+        <label class="field" id="email-field">Email <span class="req">*</span>
+          <input name="email" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" maxlength="254"
+                 placeholder="name@institute.org" aria-describedby="email-status" required>
+          <span class="field-status" id="email-status" aria-live="polite" hidden></span>
+        </label>
+        <label class="field">Password <span class="req">*</span>
+          <input name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <!-- Create account only; setMode() shows them. -->
+        <label class="field register-only" hidden>Institution / Company <span class="req">*</span>
+          <input name="institution" autocomplete="organization" maxlength="200" required>
+        </label>
+        <label class="field register-only" hidden>Position <span class="req">*</span>
+          <input name="position" autocomplete="organization-title" maxlength="200" placeholder="e.g. PhD student, Research scientist" required>
+        </label>
+        <p class="form-error" id="auth-error" role="alert" hidden></p>
+        <button class="btn primary wide" type="submit" id="auth-submit">Sign in</button>
+        <p class="hint" id="auth-hint">Passwords are stored as argon2 hashes.</p>
+      </form>
+    </main>
+
+    <footer class="auth-foot">
+      This is a hosted instance of EMBL's Librarian, see original package at
+      <a href="https://github.com/petroni-lab/librarian/" target="_blank" rel="noopener">GitHub</a>.
+    </footer>
+  </div>
+</body>
+</html>

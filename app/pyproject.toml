@@ -1,0 +1,24 @@
+[project]
+name = "librarian-app"
+version = "1.0.0"
+description = "The app service: the web UI and its API, backed by the librarian and db services."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.141.1",       # the API the web UI calls
+    "uvicorn==0.54.0",        # ASGI server
+    "requests==2.34.2",       # calls to the librarian and db services
+    "argon2-cffi==25.1.0",    # password hashing for accounts
+    "python-dotenv==1.2.3",   # read .env when run outside Docker
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "httpx2==2.13.1",         # FastAPI's TestClient
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

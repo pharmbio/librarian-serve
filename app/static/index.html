@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Librarian</title>
+  <link rel="icon" href="/logo.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <!-- Set the theme before first paint so a dark-mode reader never sees a white flash. -->
+  <script>
+    try { document.documentElement.dataset.theme = localStorage.getItem("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
+    catch { document.documentElement.dataset.theme = "light"; }
+  </script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/">
+        <img class="logo" src="/logo.png" alt="">
+        EMBL AI Librarian
+      </a>
+      <nav class="brand-links" aria-label="About Librarian">
+        <a href="https://github.com/petroni-lab/librarian/tree/main#%EF%B8%8F-installation" target="_blank" rel="noopener" data-icon="code">GitHub repo</a>
+        <a href="https://arxiv.org/abs/2607.28229" target="_blank" rel="noopener" data-icon="file">Article</a>
+      </nav>
+      <button class="btn primary wide" id="new-question" data-icon="plus">New question</button>
+      <label class="filter" data-icon="search">
+        <input id="history-filter" type="search" placeholder="Search your history" aria-label="Search your history">
+      </label>
+      <nav class="history" id="history" aria-label="Past questions"></nav>
+      <div class="me">
+        <span class="avatar" id="avatar"></span>
+        <span class="name" id="user-email"></span>
+        <button class="btn icon ghost" id="theme" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
+        <button class="btn icon ghost" id="logout" title="Sign out" aria-label="Sign out" data-icon="logout"></button>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim"></div>
+    <main class="main">
+      <div class="topbar">
+        <button class="btn icon ghost" id="menu" aria-label="Open history" data-icon="menu"></button>
+        <a class="brand" href="/">EMBL AI Librarian</a>
+      </div>
+      <div id="view"></div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
