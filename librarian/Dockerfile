@@ -8,7 +8,13 @@ FROM python:3.12.14-slim-trixie AS build
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/venv
-WORKDIR /srv/librarian
+
+ENV USER=librarian-core
+ENV HOME=/home/$USER    
+
+RUN useradd -m -u 1000 $USER
+
+WORKDIR $HOME/app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
@@ -16,14 +22,19 @@ RUN uv sync --frozen --no-dev
 FROM python:3.12.14-slim-trixie
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 COPY --from=build /opt/venv /opt/venv
-WORKDIR /srv/librarian
-COPY librarian/ librarian/
-COPY orchestrator.py main.py ./
 
-RUN useradd --system --uid 10001 librarian
-USER librarian
+ENV USER=librarian-core
+ENV HOME=/home/$USER  
+
+RUN useradd -m -u 1000 $USER
+
+WORKDIR $HOME/app
+COPY . .
 
 EXPOSE 7680
+
+USER $USER
+
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7680/health', timeout=2)"]
 CMD ["uvicorn", "orchestrator:app", "--host", "0.0.0.0", "--port", "7680"]

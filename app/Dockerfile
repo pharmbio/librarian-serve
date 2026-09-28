@@ -8,7 +8,13 @@ FROM python:3.12.14-slim-trixie AS build
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/venv
-WORKDIR /srv/app
+
+ENV USER=libraian-app
+ENV HOME=/home/$USER
+
+RUN useradd -m -u 1000 $USER
+
+WORKDIR $HOME/app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
@@ -16,12 +22,18 @@ RUN uv sync --frozen --no-dev
 FROM python:3.12.14-slim-trixie
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 COPY --from=build /opt/venv /opt/venv
-WORKDIR /srv/app
-COPY main.py db_client.py librarian_client.py service_http.py ./
-COPY static/ static/
 
-RUN useradd --system --uid 10001 app
-USER app
+ENV USER=libraian-app
+ENV HOME=/home/$USER
+
+RUN useradd -m -u 1000 $USER
+
+WORKDIR $HOME/app
+
+COPY . .
+
+
+USER $USER
 
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
