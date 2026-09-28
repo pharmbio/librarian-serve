@@ -18,10 +18,10 @@ Users and runs are addressed by random public ids. A {user_id} in an API path
 must be the signed-in user's own (anyone else's is a 403), and a run that isn't
 theirs is a 404.
 
-The app keeps no state of its own. Questions go to the librarian service at
-LIBRARIAN_URL (librarian_client.py); users, sessions, queries and runs live in
-the db service at DB_URL (db_client.py). The app starts whether or not they
-are up, and a request that needs one that is down fails with a message saying so.
+Questions go to the librarian service at LIBRARIAN_URL (librarian_client.py);
+users, sessions, queries and runs live in Supabase's Postgres at DATABASE_URL
+(db_client.py). The app starts whether or not they are up, and a request that
+needs one that is down fails with a message saying so.
 """
 
 import functools
@@ -34,6 +34,7 @@ import re
 import secrets
 import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
@@ -58,9 +59,7 @@ load_dotenv()
 LIBRARIAN_URL = os.getenv("LIBRARIAN_URL", "http://localhost:7680")
 LIBRARIAN_API_KEY = os.getenv("LIBRARIAN_API_KEY", "")
 LIBRARIAN_TIMEOUT_S = float(os.getenv("LIBRARIAN_TIMEOUT_S", "120"))
-DB_URL = os.getenv("DB_URL", "http://localhost:8000")
-DB_API_KEY = os.getenv("DB_API_KEY", "")
-DB_TIMEOUT_S = float(os.getenv("DB_TIMEOUT_S", "10"))
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 ALLOW_SIGNUP = os.getenv("LIBRARIAN_ALLOW_SIGNUP", "1") == "1"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -72,14 +71,24 @@ PUBLIC_ID_PATTERN = re.compile(r"[0-9a-f]{16}")
 # proxies between here and the browser don't close it as idle.
 HEARTBEAT_S = 15.0
 
-db = DbClient(DB_URL, api_key=DB_API_KEY, timeout_s=DB_TIMEOUT_S)
+db = DbClient(DATABASE_URL)
 librarian = LibrarianClient(
     LIBRARIAN_URL, api_key=LIBRARIAN_API_KEY, timeout_s=LIBRARIAN_TIMEOUT_S
 )
 _hasher = PasswordHasher()
 logger = logging.getLogger("uvicorn.error")
 
-app = FastAPI(title="Librarian app")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        db.ensure_schema()
+    except ServiceUnavailable:
+        logger.warning("The database is unreachable; the first request that needs it tries again.")
+    yield
+
+
+app = FastAPI(title="Librarian app", lifespan=lifespan)
 
 
 @app.exception_handler(ServiceError)
@@ -90,9 +99,9 @@ async def _service_error(_request: Request, exc: ServiceError) -> JSONResponse:
     return JSONResponse({"detail": str(exc)}, status_code=status)
 
 
-def _stamp(iso: Optional[str]) -> Optional[str]:
-    """A db service time (ISO 8601, UTC) as the UI reads it: "YYYY-MM-DD HH:MM:SS"."""
-    return datetime.fromisoformat(iso).strftime("%Y-%m-%d %H:%M:%S") if iso else iso
+def _stamp(moment: Optional[datetime]) -> Optional[str]:
+    """A stored time (UTC) as the UI reads it: "YYYY-MM-DD HH:MM:SS"."""
+    return moment.strftime("%Y-%m-%d %H:%M:%S") if moment else None
 
 
 # Accounts and sessions
@@ -124,7 +133,7 @@ def _token_hash(token: str) -> str:
 
 def _start_session(request: Request, response: Response, user_id: str) -> None:
     """Store a new session for ``user_id`` and hand its token to the browser.
-    The db service also records the sign-in and clears expired sessions."""
+    Storing it also records the sign-in and clears expired sessions."""
     token = secrets.token_urlsafe(32)
     db.create_session(_token_hash(token), user_id, SESSION_DAYS * 86400)
     response.set_cookie(
@@ -143,8 +152,8 @@ def _user_json(user: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def current_user(request: Request) -> Dict[str, Any]:
-    """FastAPI dependency: the signed-in user, as the db service returns
-    users, else 401."""
+    """FastAPI dependency: the signed-in user, as db_client returns users,
+    else 401."""
     token = request.cookies.get(SESSION_COOKIE)
     session = token and db.get_session(_token_hash(token))
     if not session:
@@ -229,10 +238,10 @@ class RunRequest(BaseModel):
 
 
 def _run_for_user(user_id: str, request: RunRequest, **callbacks: Any) -> Dict[str, Any]:
-    """Ask the librarian, recording the question and its run in the db service.
+    """Ask the librarian, recording the question and its run in the database.
 
     The query and its run are stored before the librarian is asked, so with
-    the db service down the request fails before any LLM work. The run then
+    the database down the request fails before any LLM work. The run then
     ends ``completed`` with the answer, or ``failed`` with the reason.
 
     :param callbacks: ``on_progress`` / ``on_queries`` / ``on_evidence``, see
@@ -261,7 +270,7 @@ def _run_for_user(user_id: str, request: RunRequest, **callbacks: Any) -> Dict[s
 
 
 def _record_failure(run_id: str, exc: Exception, started: float) -> None:
-    """Mark the run failed. Best effort: the db service may be what failed."""
+    """Mark the run failed. Best effort: the database may be what failed."""
     try:
         db.update_run(
             run_id,

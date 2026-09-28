@@ -1,8 +1,0 @@
-# Secrets and local data never go into a build: the database lives on a volume.
-.env
-data/
-*.sqlite3*
-.venv/
-tests/
-.pytest_cache/
-__pycache__/

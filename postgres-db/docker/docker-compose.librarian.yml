@@ -1,0 +1,20 @@
+# Librarian's changes to the self-hosted Supabase stack, layered on top of
+# docker-compose.yml through COMPOSE_FILE in .env (sh run.sh config show).
+# Kept in their own file so that update.sh can still update the base file.
+
+services:
+  db:
+    volumes:
+      # Replaces the ./volumes/db/data bind mount (same target path). On macOS
+      # Docker Desktop the bind mount can't be chowned to the postgres user, so
+      # Postgres refuses to start, the init scripts never run and every service
+      # then fails to log in. A named volume works on every host.
+      - db-data:/var/lib/postgresql/data
+      # Creates the librarian role and schema for Librarian's app. Like every
+      # init script, it runs only when the database is first created.
+      - ./volumes/db/librarian.sql:/docker-entrypoint-initdb.d/migrations/99-librarian.sql:Z
+    environment:
+      LIBRARIAN_DB_PASSWORD: ${LIBRARIAN_DB_PASSWORD:?set LIBRARIAN_DB_PASSWORD in .env}
+
+volumes:
+  db-data:

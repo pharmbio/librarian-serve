@@ -5,7 +5,6 @@ import requests
 from urllib3.exceptions import MaxRetryError, NewConnectionError, ProtocolError
 
 import service_http
-from db_client import Conflict, DbClient, DbError
 from librarian_client import LibrarianBusy, LibrarianClient, LibrarianError, _frames
 from service_http import ServiceError, ServiceUnavailable, send
 
@@ -82,41 +81,6 @@ def test_every_call_has_timeouts():
     session = FakeSession(response(200, {}))
     send(session, "GET", "u", name="x", idempotent=True, read_timeout=7)
     assert session.calls[0][2]["timeout"] == (service_http.CONNECT_TIMEOUT_S, 7)
-
-
-# db client
-
-
-def db_with(*script):
-    client = DbClient("http://db:8000/", api_key="k")
-    client._session = FakeSession(*script)
-    return client
-
-
-def test_db_client_maps_statuses():
-    error = {"error": {"code": "conflict", "message": "An account with that email already exists."}}
-    with pytest.raises(Conflict, match="already exists"):
-        db_with(response(409, error)).create_user("a@b.org", "h", "i", "p")
-    assert db_with(response(404, {"error": {"message": "x"}})).get_run("0123456789abcdef") is None
-    with pytest.raises(ServiceUnavailable):
-        db_with(response(500, {}), response(500, {}), response(500, {})).get_run("x")
-    with pytest.raises(DbError) as refused_error:
-        db_with(response(401, {"error": {"message": "Missing or wrong X-API-Key header."}})).get_run("x")
-    assert refused_error.value.status == 401 and not isinstance(refused_error.value, ServiceUnavailable)
-
-
-def test_db_client_quotes_path_segments():
-    client = db_with(response(404, {}))
-    client.get_run("../users?x=1")
-    assert client._session.calls[0][1] == "http://db:8000/api/v1/runs/..%2Fusers%3Fx%3D1"
-
-
-def test_db_client_pages_through_lists():
-    first = {"items": [{"id": str(i)} for i in range(200)], "total": 201}
-    second = {"items": [{"id": "200"}], "total": 201}
-    client = db_with(response(200, first), response(200, second))
-    assert len(client.list_runs(user_id="u")) == 201
-    assert client._session.calls[1][2]["params"]["offset"] == 200
 
 
 # librarian client

@@ -1,5 +1,6 @@
-# The app service: the web UI and its API on :8080. It calls the librarian and
-# db services at LIBRARIAN_URL and DB_URL, and starts whether or not they are up.
+# The app service: the web UI and its API on :8080. It calls the librarian at
+# LIBRARIAN_URL, keeps its data in Supabase's Postgres at DATABASE_URL, and
+# starts whether or not they are up.
 # Build from this folder:  docker build -t librarian-app .
 FROM ghcr.io/astral-sh/uv:0.11.21 AS uv
 

@@ -1,5 +1,5 @@
-"""What the db and librarian clients share: timeouts, retries with backoff, and
-the exceptions that say a service the app depends on has failed."""
+"""What the service clients share: timeouts, retries with backoff for HTTP
+calls, and the exceptions that say a service the app depends on has failed."""
 
 import logging
 import time

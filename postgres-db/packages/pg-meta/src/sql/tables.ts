@@ -1,0 +1,147 @@
+import { safeSql, type SafeSqlFragment } from '../pg-format'
+
+/**
+ * Builder for the tables introspection query.
+ *
+ * `targetOid`, when provided, is a scalar SQL fragment yielding the single OID
+ * to restrict the query to -- either a literal (`123`) or an uncorrelated scalar
+ * subquery (`(select tc.oid from pg_class tc join ... where relname=..)`). It is
+ * compared with `=` so the planner evaluates it once as an initplan constant and
+ * drives INDEX scans on the base pg_class scan AND the primary-key /
+ * relationships subqueries, instead of computing sizes, PKs and FK relationships
+ * for the ENTIRE catalog. (A multiply-referenced CTE would be materialized and
+ * act as an optimization barrier, forcing seq scans -- hence a scalar.) The
+ * relationships filter keeps BOTH directions (conrelid OR confrelid), matching
+ * the outgoing/incoming FK rows the unscoped query would have matched by name.
+ *
+ * When `targetOid` is omitted the injected fragments are empty and the rendered
+ * SQL is the full-catalog query used by existing consumers. Shared correctness
+ * fixes belong in this builder so scoped and unscoped consumers stay
+ * behaviorally equivalent; execution-based tests in test/tables.test.ts enforce
+ * that equivalence.
+ */
+export const getTablesSql = (targetOid?: SafeSqlFragment) => {
+  const mainScope = targetOid
+    ? safeSql`
+  AND c.oid = ${targetOid}`
+    : safeSql``
+  const pkScope = targetOid
+    ? safeSql`
+      and c.oid = ${targetOid}`
+    : safeSql``
+  const relScope = targetOid
+    ? safeSql`
+      and (c.conrelid = ${targetOid} or c.confrelid = ${targetOid})`
+    : safeSql``
+  // Scoped path only: deterministic relationships order (plan-order dependent
+  // otherwise). A composite FK expands to one entry per ordinal column pair
+  // sharing constraint_name, so tie-break on the column names. Empty for
+  // unscoped consumers, preserving their existing plan-dependent order.
+  const relOrder = targetOid
+    ? safeSql` order by relationships.constraint_name, relationships.source_column_name, relationships.target_column_name`
+    : safeSql``
+
+  return /* SQL */ safeSql`
+SELECT
+  c.oid :: int8 AS id,
+  nc.nspname AS schema,
+  c.relname AS name,
+  c.relrowsecurity AS rls_enabled,
+  c.relforcerowsecurity AS rls_forced,
+  CASE
+    WHEN c.relreplident = 'd' THEN 'DEFAULT'
+    WHEN c.relreplident = 'i' THEN 'INDEX'
+    WHEN c.relreplident = 'f' THEN 'FULL'
+    ELSE 'NOTHING'
+  END AS replica_identity,
+  pg_total_relation_size(format('%I.%I', nc.nspname, c.relname)) :: int8 AS bytes,
+  pg_size_pretty(
+    pg_total_relation_size(format('%I.%I', nc.nspname, c.relname))
+  ) AS size,
+  pg_stat_get_live_tuples(c.oid) AS live_rows_estimate,
+  pg_stat_get_dead_tuples(c.oid) AS dead_rows_estimate,
+  obj_description(c.oid) AS comment,
+  coalesce(pk.primary_keys, '[]') as primary_keys,
+  coalesce(
+    jsonb_agg(relationships${relOrder}) filter (where relationships is not null),
+    '[]'
+  ) as relationships
+FROM
+  pg_namespace nc
+  JOIN pg_class c ON nc.oid = c.relnamespace
+  left join (
+    select
+      c.oid::int8 as table_id,
+      jsonb_agg(
+        jsonb_build_object(
+          'table_id', c.oid::int8,
+          'schema', n.nspname,
+          'table_name', c.relname,
+          'name', a.attname
+        )
+        order by array_position(i.indkey, a.attnum)
+      ) as primary_keys
+    from
+      pg_index i
+      join pg_class c on i.indrelid = c.oid
+      join pg_namespace n on c.relnamespace = n.oid
+      join pg_attribute a on a.attrelid = c.oid and a.attnum = any(i.indkey)
+    where
+      i.indisprimary${pkScope}
+    group by c.oid
+  ) as pk
+  on pk.table_id = c.oid
+  left join (
+    select
+      c.oid :: int8 as id,
+      c.conname as constraint_name,
+      nsa.nspname as source_schema,
+      csa.relname as source_table_name,
+      sa.attname as source_column_name,
+      nta.nspname as target_table_schema,
+      cta.relname as target_table_name,
+      ta.attname as target_column_name
+    from
+      pg_constraint c
+    cross join lateral unnest(c.conkey, c.confkey) with ordinality as cols(source_attnum, target_attnum, ord)
+    join (
+      pg_attribute sa
+      join pg_class csa on sa.attrelid = csa.oid
+      join pg_namespace nsa on csa.relnamespace = nsa.oid
+    ) on sa.attrelid = c.conrelid and sa.attnum = cols.source_attnum
+    join (
+      pg_attribute ta
+      join pg_class cta on ta.attrelid = cta.oid
+      join pg_namespace nta on cta.relnamespace = nta.oid
+    ) on ta.attrelid = c.confrelid and ta.attnum = cols.target_attnum
+    where
+      c.contype = 'f'${relScope}
+  ) as relationships
+  on (relationships.source_schema = nc.nspname and relationships.source_table_name = c.relname)
+  or (relationships.target_table_schema = nc.nspname and relationships.target_table_name = c.relname)
+WHERE
+  c.relkind IN ('r', 'p')
+  AND NOT pg_is_other_temp_schema(nc.oid)
+  AND (
+    pg_has_role(c.relowner, 'USAGE')
+    OR has_table_privilege(
+      c.oid,
+      'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+    )
+    OR has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')
+  )${mainScope}
+group by
+  c.oid,
+  c.relname,
+  c.relrowsecurity,
+  c.relforcerowsecurity,
+  c.relreplident,
+  nc.nspname,
+  pk.primary_keys
+`
+}
+
+// Unscoped full-catalog rendering served while the pgMetaScopedIntrospection
+// flag is off. Scope-specific changes belong behind targetOid; shared
+// correctness fixes apply to both this path and scoped tables.retrieve.
+export const TABLES_SQL = getTablesSql()

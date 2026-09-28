@@ -1,0 +1,10 @@
+export enum PipelineStatusName {
+  FAILED = 'failed',
+  STARTING = 'starting',
+  STARTED = 'started',
+  STOPPED = 'stopped',
+  STOPPING = 'stopping',
+  UNKNOWN = 'unknown',
+}
+
+export const PIPELINES_FEEDBACK_URL = 'https://github.com/orgs/supabase/discussions/39416'

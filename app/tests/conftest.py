@@ -12,8 +12,8 @@ from db_client import NAME as DB_NAME
 from service_http import unavailable
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class FakeDb:
@@ -24,6 +24,9 @@ class FakeDb:
     def _up(self) -> None:
         if self.down:
             raise unavailable(DB_NAME)
+
+    def ensure_schema(self):
+        self._up()
 
     @staticmethod
     def _public(user):
@@ -36,7 +39,7 @@ class FakeDb:
     def create_user(self, email, password_hash, institution, position):
         self._up()
         if any(user["email"] == email for user in self.users.values()):
-            raise Conflict(409, "An account with that email already exists.")
+            raise Conflict("An account with that email already exists.")
         user = {
             "id": secrets.token_hex(8), "email": email, "password_hash": password_hash,
             "institution": institution, "position": position,

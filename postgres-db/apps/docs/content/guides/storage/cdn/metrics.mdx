@@ -1,0 +1,43 @@
+---
+id: 'storage-cdn'
+title: 'Cache Metrics'
+description: 'Learn how Supabase Storage caches objects with a CDN.'
+sidebar_label: 'CDN'
+---
+
+Cache hits can be determined via the `log_attributes['response.headers.cf_cache_status']` key in [Query logs with SQL](/docs/guides/observability/advanced-log-filtering#logs-explorer). Any value that corresponds to either `HIT`, `STALE`, `REVALIDATED`, or `UPDATING` is categorized as a cache hit.
+The following example query will show the top cache misses from the `edge_logs`:
+
+```sql
+select
+  log_attributes['request.path'] as path,
+  log_attributes['request.search'] as search,
+  count() as count
+from logs
+where source = 'edge_logs'
+  and startsWith(log_attributes['request.path'], '/storage/v1/object')
+  and log_attributes['request.method'] = 'GET'
+  and log_attributes['response.headers.cf_cache_status'] in ('MISS', 'NONE/UNKNOWN', 'EXPIRED', 'BYPASS', 'DYNAMIC')
+group by path, search
+order by count desc
+limit 50;
+```
+
+Run this query in [Explorer](/dashboard/project/_/explorer): select **Run SQL**, choose query source **Logs**, and set a time range.
+
+Your cache hit ratio over time can then be determined using the following query:
+
+```sql
+select
+  toStartOfHour(timestamp) as timestamp,
+  countIf(log_attributes['response.headers.cf_cache_status'] in ('HIT', 'STALE', 'REVALIDATED', 'UPDATING')) / count() as ratio
+from logs
+where source = 'edge_logs'
+  and startsWith(log_attributes['request.path'], '/storage/v1/object')
+  and log_attributes['request.method'] = 'GET'
+group by timestamp
+order by timestamp desc
+limit 100;
+```
+
+Run this query in [Explorer](/dashboard/project/_/explorer): select **Run SQL**, choose query source **Logs**, and set a time range.

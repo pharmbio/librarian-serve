@@ -1,14 +1,17 @@
 [project]
 name = "librarian-app"
 version = "1.0.0"
-description = "The app service: the web UI and its API, backed by the librarian and db services."
+description = "The app service: the web UI and its API, backed by the librarian service and Supabase's Postgres."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi==0.141.1",       # the API the web UI calls
     "uvicorn==0.54.0",        # ASGI server
-    "requests==2.34.2",       # calls to the librarian and db services
+    "requests==2.34.2",       # calls to the librarian service
     "argon2-cffi==25.1.0",    # password hashing for accounts
     "python-dotenv==1.2.3",   # read .env when run outside Docker
+    "sqlalchemy==2.1.1",      # the tables and queries (models.py, db_client.py)
+    "alembic==1.20.0",        # schema migrations, run at startup
+    "psycopg[binary]==3.3.6", # Postgres driver, for Supabase's database
 ]
 
 [dependency-groups]

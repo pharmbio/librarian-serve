@@ -103,8 +103,8 @@ function download(filename, text, type) {
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
-// A run's user id and run id are 16 hex characters (the db service's
-// new_id), the only paths the server answers with this page.
+// A run's user id and run id are 16 hex characters (models.py's new_id),
+// the only paths the server answers with this page.
 const RUN_PATH = /^\/([0-9a-f]{16})\/([0-9a-f]{16})$/;
 const runPath = (runId) => `/${state.me.id}/${runId}`;
 const onLive = () => history.state?.live === true;

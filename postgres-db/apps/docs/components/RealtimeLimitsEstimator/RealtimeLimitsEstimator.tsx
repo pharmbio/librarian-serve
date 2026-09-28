@@ -1,0 +1,199 @@
+import throughputTable from '~/data/realtime/throughput.json'
+import { ChevronDown } from 'lucide-react'
+import { useState } from 'react'
+import {
+  cn,
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from 'ui'
+
+import {
+  COMPUTE_LABELS,
+  COMPUTE_OPTIONS,
+  THROUGHPUT_METRIC_HEADINGS,
+  THROUGHPUT_TABLE_HEADINGS,
+} from './RealtimeLimitsEstimator.constants'
+
+export default function RealtimeLimitsEstimater({}) {
+  const findTableValue = ({ computeAddOn, rls, concurrency }) => {
+    return throughputTable.find(
+      (l) => l.computeAddOn === computeAddOn && l.rls === rls && l.concurrency === concurrency
+    )
+  }
+
+  const [computeAddOn, setComputeAddOn] = useState('micro')
+  const [rls, setRLS] = useState(false)
+  const [concurrency, setConcurrency] = useState(500)
+
+  const [limits, setLimits] = useState(findTableValue({ computeAddOn, rls, concurrency }))
+
+  const [expandPreview, setExpandPreview] = useState(false)
+
+  const handleComputeAddOnSelection = (val) => {
+    setComputeAddOn(val)
+    setConcurrency(500)
+    setLimits(findTableValue({ computeAddOn: val, rls, concurrency: 500 }))
+  }
+
+  const handleRLSSelection = (value) => {
+    const val = value.toLowerCase() === 'true'
+    setRLS(val)
+    setConcurrency(500)
+    setLimits(findTableValue({ computeAddOn, rls: val, concurrency: 500 }))
+  }
+
+  const handleConcurrencySelection = (value) => {
+    const val = parseInt(value)
+    setConcurrency(val)
+    setLimits(findTableValue({ computeAddOn, rls, concurrency: val }))
+  }
+
+  return (
+    <div>
+      <span className="block font-heading font-semibold text-lg mt-9 mb-[18px] text-foreground">
+        Set your expected parameters
+      </span>
+      <div className="grid mb-8 gap-y-8 gap-x-8 grid-cols-2 xl:grid-cols-4">
+        <div>
+          <Label htmlFor="computeAddOn">Compute:</Label>
+          <Select onValueChange={handleComputeAddOnSelection} value={computeAddOn}>
+            <SelectTrigger id="computeAddOn">
+              <SelectValue className="font-mono" />
+            </SelectTrigger>
+            <SelectContent>
+              {COMPUTE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label htmlFor="rls">RLS:</Label>
+          <Select onValueChange={handleRLSSelection} value={rls.toString()}>
+            <SelectTrigger id="rls">
+              <SelectValue className="font-mono" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="false">No</SelectItem>
+              <SelectItem value="true">Yes</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label htmlFor="concurrency">Connected clients:</Label>
+          <Select onValueChange={handleConcurrencySelection} value={concurrency.toString()}>
+            <SelectTrigger id="concurrency">
+              <SelectValue className="font-mono" />
+            </SelectTrigger>
+            <SelectContent>
+              {throughputTable
+                .filter((l) => l.computeAddOn === computeAddOn && l.rls === rls)
+                .map((l) => (
+                  <SelectItem key={l.concurrency} value={l.concurrency.toString()}>
+                    {Intl.NumberFormat().format(l.concurrency)}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {limits && (
+        <div className="mt-8">
+          <span className="block font-heading font-semibold text-lg mt-9 mb-[18px] text-foreground">
+            Current maximum possible throughput
+          </span>
+
+          <table className="table-auto">
+            <thead>
+              <tr>
+                {THROUGHPUT_METRIC_HEADINGS.map((heading) => (
+                  <th key={heading} className="px-4 py-2">
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="border px-4 py-2">{limits.maxDBChanges}</td>
+                <td className="border px-4 py-2">{limits.maxMessagesPerClient}</td>
+                <td className="border px-4 py-2">
+                  {Intl.NumberFormat().format(limits.totalMessagesPerSecond)}
+                </td>
+                <td className="border px-4 py-2">{limits.p95Latency}ms</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Collapsible open={expandPreview} onOpenChange={setExpandPreview}>
+        <CollapsibleTrigger className="group text-base py-1 flex items-center gap-1 cursor-pointer select-none mb-10 text-foreground-light hover:text-foreground transition-colors">
+          View raw throughput table
+          <ChevronDown
+            size={14}
+            strokeWidth={2}
+            aria-hidden
+            className={cn(
+              'text-foreground-lighter group-hover:text-foreground transition-colors',
+              expandPreview && 'rotate-180'
+            )}
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div>
+            {throughputTable
+              .map((l) => l.computeAddOn)
+              .filter((v, i, a) => a.indexOf(v) === i)
+              .map((computeAddOn) => (
+                <div>
+                  <span className="block font-heading font-semibold text-lg mt-9 mb-[18px] text-foreground">
+                    {COMPUTE_LABELS[computeAddOn]}
+                  </span>
+                  <table className="table-auto">
+                    <thead>
+                      <tr>
+                        {THROUGHPUT_TABLE_HEADINGS.map((heading) => (
+                          <th key={heading} className="px-4 py-2">
+                            {heading}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {throughputTable
+                        .filter((l) => l.computeAddOn === computeAddOn)
+                        .map((l) => (
+                          <tr>
+                            <td className="border px-4 py-2">{l.rls ? '✅' : '🚫'}</td>
+                            <td className="border px-4 py-2">
+                              {Intl.NumberFormat().format(l.concurrency)}
+                            </td>
+                            <td className="border px-4 py-2">{l.maxDBChanges}</td>
+                            <td className="border px-4 py-2">{l.maxMessagesPerClient}</td>
+                            <td className="border px-4 py-2">
+                              {Intl.NumberFormat().format(l.totalMessagesPerSecond)}
+                            </td>
+                            <td className="border px-4 py-2">{l.p95Latency}ms</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  )
+}

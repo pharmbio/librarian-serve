@@ -1,0 +1,251 @@
+import { PermissionAction } from '@supabase/shared-types/out/constants'
+import { Check, Plus } from 'lucide-react'
+import { ComponentPropsWithoutRef, forwardRef, useMemo, useState } from 'react'
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Button,
+  ComboboxTrigger,
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  ScrollArea,
+  Skeleton,
+} from 'ui'
+
+import { RestartProjectDialog } from '@/components/interfaces/ErrorHandling/RestartProjectDialog'
+import { useSchemasQuery } from '@/data/database/schemas-query'
+import { useAsyncCheckPermissions } from '@/hooks/misc/useCheckPermissions'
+import { useSchemasFilteredForHighAvailability } from '@/hooks/misc/useHighAvailability'
+import { useSelectedProjectQuery } from '@/hooks/misc/useSelectedProject'
+
+type SchemaSelectorProps = Omit<ComponentPropsWithoutRef<'div'>, 'onSelect'> & {
+  disabled?: boolean
+  size?: 'tiny' | 'small'
+  showError?: boolean
+  selectedSchemaName?: string
+  placeholderLabel?: string
+  supportSelectAll?: boolean
+  excludedSchemas?: string[]
+  onSelectSchema: (name: string) => void
+  onSelectCreateSchema?: () => void
+  align?: 'start' | 'end'
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}
+
+const DEFAULT_EXCLUDED_SCHEMAS: string[] = []
+
+export const SchemaSelector = forwardRef<HTMLDivElement, SchemaSelectorProps>(
+  (
+    {
+      className,
+      disabled = false,
+      size = 'tiny',
+      showError = true,
+      selectedSchemaName,
+      placeholderLabel = 'Choose a schema...',
+      supportSelectAll = false,
+      excludedSchemas = DEFAULT_EXCLUDED_SCHEMAS,
+      onSelectSchema,
+      onSelectCreateSchema,
+      align = 'start',
+      open: openProp,
+      onOpenChange,
+      ...rest
+    },
+    ref
+  ) => {
+    const [internalOpen, setInternalOpen] = useState(false)
+    const [isRestartDialogVisible, setIsRestartDialogVisible] = useState(false)
+    const isControlled = openProp !== undefined
+    const open = isControlled ? openProp : internalOpen
+    const setOpen = (next: boolean) => {
+      if (!isControlled) setInternalOpen(next)
+      onOpenChange?.(next)
+    }
+    const { can: canCreateSchemas } = useAsyncCheckPermissions(
+      PermissionAction.TENANT_SQL_ADMIN_WRITE,
+      'schemas'
+    )
+
+    const { data: project } = useSelectedProjectQuery()
+    const {
+      data,
+      isPending: isSchemasLoading,
+      isSuccess: isSchemasSuccess,
+      isError: isSchemasError,
+      error: schemasError,
+      refetch: refetchSchemas,
+    } = useSchemasQuery({
+      projectRef: project?.ref,
+      connectionString: project?.connectionString,
+    })
+
+    const visibleSchemas = useSchemasFilteredForHighAvailability(data)
+
+    const schemas = useMemo(
+      () =>
+        visibleSchemas
+          .filter((schema) => !excludedSchemas.includes(schema.name))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      [visibleSchemas, excludedSchemas]
+    )
+
+    return (
+      <div ref={ref} className={className} {...rest}>
+        {isSchemasLoading && (
+          <Button
+            key="schema-selector-skeleton"
+            className="w-full [&>span]:w-full"
+            size={size}
+            disabled
+          >
+            <Skeleton className="w-full h-3 bg-foreground-muted" />
+          </Button>
+        )}
+
+        {showError && isSchemasError && (
+          <Alert variant="warning" className="px-3! py-3!">
+            <AlertTitle className="text-xs text-amber-900">Failed to load schemas</AlertTitle>
+            <AlertDescription className="text-xs mb-2 wrap-break-word">
+              Error: {(schemasError as any)?.message}
+            </AlertDescription>
+            <div className="flex flex-wrap gap-2">
+              <Button size="tiny" onClick={() => refetchSchemas()}>
+                Reload schemas
+              </Button>
+              <Button size="tiny" onClick={() => setIsRestartDialogVisible(true)}>
+                Restart database
+              </Button>
+            </div>
+            <RestartProjectDialog
+              visible={isRestartDialogVisible}
+              onClose={() => setIsRestartDialogVisible(false)}
+              restartType="database"
+            />
+          </Alert>
+        )}
+
+        {isSchemasSuccess && (
+          <Popover open={open} onOpenChange={setOpen} modal={false}>
+            <PopoverTrigger asChild>
+              <ComboboxTrigger
+                size={size}
+                disabled={disabled}
+                data-testid="schema-selector"
+                aria-label={
+                  selectedSchemaName
+                    ? `Schema ${selectedSchemaName === '*' ? 'All schemas' : selectedSchemaName}`
+                    : placeholderLabel
+                }
+                aria-expanded={open}
+                data-state={open ? 'open' : 'closed'}
+                className={size === 'tiny' ? 'w-full pr-1.5!' : 'w-full'}
+              >
+                {selectedSchemaName ? (
+                  <span className="flex w-full gap-1">
+                    <span className="text-foreground-lighter">schema</span>
+                    <span className="text-foreground">
+                      {selectedSchemaName === '*' ? 'All schemas' : selectedSchemaName}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="flex w-full gap-1 text-foreground-lighter">
+                    {placeholderLabel}
+                  </span>
+                )}
+              </ComboboxTrigger>
+            </PopoverTrigger>
+            <PopoverContent
+              className="p-0 min-w-[200px] pointer-events-auto"
+              side="bottom"
+              align={align}
+              sameWidthAsTrigger
+            >
+              <Command>
+                <CommandInput className="text-xs" placeholder="Find schema..." />
+                <CommandList>
+                  <CommandEmpty>No schemas found</CommandEmpty>
+                  <CommandGroup>
+                    <ScrollArea className={(schemas || []).length > 7 ? 'h-[210px]' : ''}>
+                      {supportSelectAll && (
+                        <CommandItem
+                          key="select-all"
+                          className="cursor-pointer flex items-center justify-between space-x-2 w-full"
+                          onSelect={() => {
+                            onSelectSchema('*')
+                            setOpen(false)
+                          }}
+                          onClick={() => {
+                            onSelectSchema('*')
+                            setOpen(false)
+                          }}
+                        >
+                          <span>All schemas</span>
+                          {selectedSchemaName === '*' && (
+                            <Check className="text-primary" strokeWidth={2} size={16} />
+                          )}
+                        </CommandItem>
+                      )}
+                      {schemas.map((schema) => (
+                        <CommandItem
+                          key={schema.id}
+                          className="cursor-pointer flex items-center justify-between space-x-2 w-full"
+                          onSelect={() => {
+                            onSelectSchema(schema.name)
+                            setOpen(false)
+                          }}
+                          onClick={() => {
+                            onSelectSchema(schema.name)
+                            setOpen(false)
+                          }}
+                        >
+                          <span>{schema.name}</span>
+                          {selectedSchemaName === schema.name && (
+                            <Check className="text-primary" strokeWidth={2} size={16} />
+                          )}
+                        </CommandItem>
+                      ))}
+                    </ScrollArea>
+                  </CommandGroup>
+                  {onSelectCreateSchema !== undefined && canCreateSchemas && (
+                    <>
+                      <CommandSeparator />
+                      <CommandGroup>
+                        <CommandItem
+                          className="cursor-pointer flex items-center gap-x-2 w-full"
+                          onSelect={() => {
+                            onSelectCreateSchema()
+                            setOpen(false)
+                          }}
+                          onClick={() => {
+                            onSelectCreateSchema()
+                            setOpen(false)
+                          }}
+                        >
+                          <Plus size={12} />
+                          Create a new schema
+                        </CommandItem>
+                      </CommandGroup>
+                    </>
+                  )}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        )}
+      </div>
+    )
+  }
+)
+
+SchemaSelector.displayName = 'SchemaSelector'

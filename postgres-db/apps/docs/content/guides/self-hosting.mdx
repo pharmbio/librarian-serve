@@ -1,0 +1,52 @@
+---
+title: 'Self-Hosting'
+description: 'Host Supabase on your own infrastructure.'
+subtitle: 'Install and run your own Supabase on your computer, server, or cloud infrastructure.'
+hideToc: true
+---
+
+Self-hosting is a good fit if you need full control over your data, have compliance requirements that prevent you from using managed services, or want to run Supabase in an isolated environment.
+
+<ContentListings id="self-hosting-get-started" />
+
+<ContentListings id="self-hosting-community" />
+
+## How self-hosted Supabase differs
+
+Self-hosted Supabase runs as a single project which means that Studio doesn't support multiple organizations or projects. Most settings are configured through [environment variables](https://github.com/supabase/supabase/blob/master/docker/.env.example).
+
+Unlike the managed platform, which is fully hosted and operated by Supabase, branching, advanced metrics beyond logs, managed backups and PITR, analytics and vector buckets, ETL, and the platform management API are **unavailable**.
+
+### Not the same as local development
+
+[Supabase CLI](/docs/guides/local-development/cli/getting-started) runs a local stack for development and testing. That stack is not a self-hosted deployment: it is not hardened for production and must not be exposed to external traffic.
+
+To self-host, use [Docker](/docs/guides/self-hosting/docker) or one of the community deployment options.
+
+## Your responsibilities when self-hosting
+
+When you self-host, **you are responsible for**:
+
+- Server provisioning and maintenance
+- Security hardening and keeping OS and services updated
+- Service configuration and management
+- Postgres database maintenance
+- High availability and scalability
+- Backups and disaster recovery
+- Monitoring and uptime
+
+## Telemetry
+
+Self-hosted Supabase (run via Docker Compose) **does not phone home or collect any telemetry**.
+
+The **Supabase CLI**, a separate tool also used for [local development](/docs/guides/local-development/cli/getting-started), collects usage telemetry to help improve the developer experience. See [CLI telemetry](/docs/guides/local-development/cli/getting-started#telemetry) for opt-out methods.
+
+## Support and community
+
+Self-hosted Supabase is community-supported.
+
+<ContentListings id="self-hosting-support" />
+
+### Enterprise self-hosting
+
+If you're an enterprise using self-hosted Supabase, we'd love to hear from you. Reach out to our [Growth Team](https://forms.supabase.com/enterprise) to discuss your use case, share feedback, or explore design partnership opportunities.

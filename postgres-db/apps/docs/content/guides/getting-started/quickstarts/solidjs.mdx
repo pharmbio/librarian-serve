@@ -1,0 +1,120 @@
+---
+title: 'Use Supabase with SolidJS'
+subtitle: 'Learn how to create a Supabase project, add some sample data to your database, and query the data from a SolidJS app.'
+breadcrumb: 'Framework Quickstarts'
+---
+
+<AiPrompt id="solidjs" />
+
+<$Partial path="quickstart_db_setup.mdx" />
+
+## 3. Create a SolidJS app
+
+Create a SolidJS app using the `degit` command.
+
+```bash
+npx degit solidjs/templates/vanilla/basic my-app
+```
+
+The template ships with a `pnpm-lock.yaml`. Remove it so `npm install` in the next steps doesn't create a second, conflicting lockfile:
+
+```bash
+rm my-app/pnpm-lock.yaml
+```
+
+## 4. Set up AI tooling (optional)
+
+<$Partial path="quickstart_ai_tooling.mdx" />
+
+## 5. Install the Supabase client library
+
+The fastest way to get started is to use the `supabase-js` client library which provides a convenient interface for working with Supabase from a SolidJS app.
+
+Navigate to the SolidJS app and install `supabase-js`.
+
+```bash
+cd my-app && npm install @supabase/supabase-js
+```
+
+## 6. Declare Supabase environment variables
+
+Create a `.env.local` file and populate with your Supabase connection variables that you can get from the helper below, or [from the project **Connect** panel](/dashboard/project/_?showConnect=true&framework=solidjs&connectTab=frameworks):
+
+<Button variant="primary" asChild>
+  <a href="/dashboard/project/_?showConnect=true&connectTab=frameworks&framework=solidjs">
+    Open Connect panel
+  </a>
+</Button>
+
+```text name=.env.local
+VITE_SUPABASE_URL=<SUBSTITUTE_SUPABASE_URL>
+VITE_SUPABASE_PUBLISHABLE_KEY=<SUBSTITUTE_SUPABASE_PUBLISHABLE_KEY>
+```
+
+<$Partial path="api_settings.mdx" variables={{ "framework": "solidjs", "tab": "frameworks" }} />
+
+## 7. Create the Supabase client
+
+Create a `src/lib` directory in your SolidJS app, create a file called `supabaseClient.ts`, and add the following code to initialize the Supabase client:
+
+```ts name=src/lib/supabaseClient.ts
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+
+export const supabase = createClient(supabaseUrl, supabasePublishableKey)
+```
+
+## 8. Query data from the app
+
+In `src/App.tsx`, add a `getInstruments` function to fetch the data and display the query result to the page.
+
+```tsx name=src/App.tsx
+import { createResource, For, Show } from 'solid-js'
+
+import { supabase } from './lib/supabaseClient'
+
+async function getInstruments() {
+  const { data, error } = await supabase.from('instruments').select()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+function App() {
+  const [instruments] = createResource(getInstruments)
+
+  return (
+    <Show
+      when={!instruments.error}
+      fallback={<p>Error loading instruments: {instruments.error?.message}</p>}
+    >
+      <ul>
+        <For each={instruments()}>{(instrument) => <li>{instrument.name}</li>}</For>
+      </ul>
+    </Show>
+  )
+}
+
+export default App
+```
+
+## 9. Start the app
+
+Start the app and go to http://localhost:3000 in a browser and you should see the list of instruments.
+
+```bash
+npm run dev
+```
+
+<$Partial path="quickstart_going_to_production.mdx" />
+
+## Next steps
+
+- Set up [Auth](/docs/guides/auth) for your app
+- [Insert more data](/docs/guides/database/import-data) into your database
+- Upload and serve static files using [Storage](/docs/guides/storage)
