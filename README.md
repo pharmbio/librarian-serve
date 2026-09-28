@@ -17,6 +17,9 @@ Starting from the original Librarian repository, we built three services, one pe
 
 The app graph is shown below:
 
+> [!TODO]
+> The database will be migrated to self-hosted postgres (supabase), which has better network protoocl and management GUI. 
+
 ```mermaid
 flowchart LR
     accTitle: Librarian service architecture
