@@ -182,17 +182,7 @@ password to that value, and put the same value in `LIBRARIAN_DB_PASSWORD` in
 docker exec -it supabase-db psql -U supabase_admin -d postgres -c "alter role librarian password '<password from DATABASE_URL>'"
 ```
 
-## Migrating from SQLite (done 2026-09-28)
-
-The data used to live in a SQLite file in the Docker volume `repur-db-data`,
-behind a separate db service. Every row (2 users, 2 queries, 2 runs and 3
-sessions) was copied into the `librarian` schema and checked to be identical.
-The `alembic_version` stays at `0001`, and sessions that were signed in stay
-signed in. The db service was then folded into the app, which now connects
-with the same role and schema. Nothing reads `repur-db-data` any more: keep it
-as a backup, or remove it with `docker volume rm repur-db-data`.
-
-## Production
+## Production ongoing 
 
 Each service gets its own address, `https://[service].scilifelab.serve.se/`.
 The examples below use these names; pick your own:
@@ -218,7 +208,7 @@ The examples below use these names; pick your own:
 `X-Forwarded-Proto`, so behind Serve's HTTPS it marks the session cookie
 `Secure` by itself.
 
-### The database address is not an HTTPS URL
+### The database address is not an HTTPS URL (discuss more with Serve)
 
 `DATABASE_URL` speaks the Postgres protocol over TCP, not HTTP. An HTTPS
 address like `https://librarian-supabase.scilifelab.serve.se` can serve Studio,
