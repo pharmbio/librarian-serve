@@ -9,7 +9,7 @@ own machine, then in production on SciLifeLab Serve.
 |---|---|---|---|
 | **app** | `app/` | <http://localhost:8080> | Web UI and its API. Calls librarian over HTTP, and keeps its data in Postgres. |
 | **librarian** | `librarian/` | <http://localhost:7680> | EMBL's Librarian, unchanged. |
-| **Supabase** | `postgres-db/docker/` | <http://localhost:54321> | Postgres, the Studio dashboard and Supabase's own APIs. |
+| **Supabase** | `postgres-db/docker/` | <http://localhost:8001> | Postgres, the Studio dashboard and Supabase's own APIs. |
 | Postgres | (in Supabase) | `localhost:5432` | Connection pooler (Supavisor) in session mode. `6543` is transaction mode. |
 
 ```mermaid
@@ -21,7 +21,7 @@ flowchart LR
     app -->|"HTTP + X-API-Key"| librarian["librarian :7680"]
     app -->|"Postgres protocol<br/>role librarian"| pooler["Supavisor :5432"]
     pooler --> postgres[("Postgres<br/>schema librarian")]
-    you(["You"]) -->|"dashboard login"| studio["Studio :54321"]
+    you(["You"]) -->|"dashboard login"| studio["Studio :8001"]
     studio --> postgres
 ```
 
@@ -53,9 +53,9 @@ Then edit these values in `postgres-db/docker/.env`:
 ```bash
 DASHBOARD_USERNAME=<your Studio login name>
 POOLER_TENANT_ID=librarian-db
-API_GW_HTTP_PORT=54321              # 8000 is where a local LLM server usually listens
-SUPABASE_PUBLIC_URL=http://localhost:54321
-API_EXTERNAL_URL=http://localhost:54321/auth/v1
+API_GW_HTTP_PORT=8001               # not 8000, where a local LLM server usually listens
+SUPABASE_PUBLIC_URL=http://localhost:8001
+API_EXTERNAL_URL=http://localhost:8001/auth/v1
 ```
 
 > [!IMPORTANT]
@@ -70,7 +70,7 @@ cd postgres-db/docker
 docker compose up -d --wait        # waits until all 11 containers are healthy
 ```
 
-Open Studio at <http://localhost:54321>. Log in with `DASHBOARD_USERNAME` and
+Open Studio at <http://localhost:8001>. Log in with `DASHBOARD_USERNAME` and
 `DASHBOARD_PASSWORD`, then open **Table Editor** and pick the schema
 **librarian**. The tables appear after the app's first start (step 4).
 
@@ -199,8 +199,8 @@ The examples below use these names; pick your own:
 |---|---|---|---|
 | `app/.env` | `LIBRARIAN_URL` | `http://host.docker.internal:7680` | `https://librarian-core.scilifelab.serve.se` |
 | `app/.env` | `DATABASE_URL` | `postgresql://librarian.librarian-db:…@host.docker.internal:5432/postgres` | `postgresql://librarian.librarian-db:…@<postgres-host>:5432/postgres` (see below) |
-| `postgres-db/docker/.env` | `SUPABASE_PUBLIC_URL` | `http://localhost:54321` | `https://librarian-supabase.scilifelab.serve.se` |
-| `postgres-db/docker/.env` | `API_EXTERNAL_URL` | `http://localhost:54321/auth/v1` | `https://librarian-supabase.scilifelab.serve.se/auth/v1` |
+| `postgres-db/docker/.env` | `SUPABASE_PUBLIC_URL` | `http://localhost:8001` | `https://librarian-supabase.scilifelab.serve.se` |
+| `postgres-db/docker/.env` | `API_EXTERNAL_URL` | `http://localhost:8001/auth/v1` | `https://librarian-supabase.scilifelab.serve.se/auth/v1` |
 | `postgres-db/docker/.env` | `SITE_URL` | `http://localhost:3000` | `https://librarian.scilifelab.serve.se` |
 | `librarian/.env` | `LLM_BASE_URL` | your LLM endpoint | your hosted LLM's `/v1` endpoint |
 

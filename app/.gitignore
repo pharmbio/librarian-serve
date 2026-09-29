@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+.env
+
+# raw screen recordings; README uses the GIFs
+assets/*.mov
+assets/*.mp4
