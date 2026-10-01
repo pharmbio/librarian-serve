@@ -1,19 +1,3 @@
-# Root folder of this turbo monorepo
-# Doesn't send useless context to Docker daemon
-.git
-.github
-about
-docker
-examples
-i18n
-**/node_modules
-apps/docs/spec
-supabase
-tests
-
-**/.next
-.vercel
-**/.env.*
-
-.dockerignore
-apps/studio/Dockerfile
+# The image needs everything here except .env and utils/.
+.env
+utils/
