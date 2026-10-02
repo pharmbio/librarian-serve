@@ -31,15 +31,14 @@ ENV HOME=/home/$USER
 RUN useradd -m -u 1000 $USER
 
 WORKDIR $HOME/app
-
 COPY . .
-
+# Executable whatever its mode in the checkout.
+COPY --chmod=0755 start-script.sh ./
 
 USER $USER
 
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
-# Trust X-Forwarded-Proto from any proxy in front of the container, so the app
-# knows when the browser is on HTTPS and marks the session cookie Secure.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--forwarded-allow-ips", "*"]
+# Serve starts the container with the start-up script in WORKDIR.
+CMD ["./start-script.sh"]

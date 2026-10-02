@@ -1,5 +1,6 @@
 # The librarian service: the agent behind a small HTTP API on :7680
-# (orchestrator.py). Stateless; the LLM backend is set by LLM_* env vars.
+# (orchestrator.py). Stateless; the LLM backend is set by LLM_* in .env, which
+# the image includes and orchestrator.py loads.
 # Build from this folder:  docker build -t librarian .
 FROM ghcr.io/astral-sh/uv:0.11.21 AS uv
 
@@ -30,6 +31,8 @@ RUN useradd -m -u 1000 $USER
 
 WORKDIR $HOME/app
 COPY . .
+# Executable whatever its mode in the checkout.
+COPY --chmod=0755 start-script.sh ./
 
 EXPOSE 7680
 
@@ -37,4 +40,5 @@ USER $USER
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7680/health', timeout=2)"]
-CMD ["uvicorn", "orchestrator:app", "--host", "0.0.0.0", "--port", "7680"]
+# Serve starts the container with the start-up script in WORKDIR.
+CMD ["./start-script.sh"]

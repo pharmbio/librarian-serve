@@ -1,5 +1,5 @@
-# The image needs only the librarian/ package, orchestrator.py and main.py.
-.env
+# The image needs only the librarian/ package, orchestrator.py, main.py,
+# start-script.sh and .env, the settings.
 .venv/
 **/__pycache__/
 .agents/
