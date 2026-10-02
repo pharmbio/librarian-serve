@@ -1,3 +1,4 @@
-# The image needs everything here except .env and utils/.
-.env
+# The image needs everything here except utils/ and generate-keys.sh's backup
+# of .env. It does include .env: the settings, secrets included.
 utils/
+.env.old

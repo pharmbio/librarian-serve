@@ -19,6 +19,11 @@ tcp "$FUNCTIONS_PORT" || failed+=(functions)
 http "http://127.0.0.1:$POOLER_API_PORT/api/health" || failed+=(pooler)
 http "http://127.0.0.1:$STUDIO_PORT/api/platform/profile" || failed+=(studio)
 tcp "$GATEWAY_PORT" || failed+=(gateway)
+# And the app's schema has its latest migration (services/schema.sh).
+latest=$(basename "$(ls /etc/librarian/migrations/*.sql | tail -1)" .sql)
+[ "$(psql -X -tA -h /var/run/postgresql -U supabase_admin -d "$DB_NAME" \
+    -c "select 1 from librarian.schema_migrations where version = '$latest'" 2>/dev/null)" = 1 ] \
+    || failed+=(schema)
 
 if [ "${#failed[@]}" -gt 0 ]; then
     echo "Not ready: ${failed[*]}"

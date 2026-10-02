@@ -19,9 +19,10 @@ must be the signed-in user's own (anyone else's is a 403), and a run that isn't
 theirs is a 404.
 
 Questions go to the librarian service at LIBRARIAN_URL (librarian_client.py);
-users, sessions, queries and runs live in Supabase's Postgres at DATABASE_URL
-(db_client.py). The app starts whether or not they are up, and a request that
-needs one that is down fails with a message saying so.
+users, sessions, queries and runs live in the Supabase container's database,
+reached through its REST API at SUPABASE_URL (db_client.py). The app starts
+whether or not they are up, and a request that needs one that is down fails
+with a message saying so.
 """
 
 import functools
@@ -59,7 +60,9 @@ load_dotenv()
 LIBRARIAN_URL = os.getenv("LIBRARIAN_URL", "http://localhost:7680")
 LIBRARIAN_API_KEY = os.getenv("LIBRARIAN_API_KEY", "")
 LIBRARIAN_TIMEOUT_S = float(os.getenv("LIBRARIAN_TIMEOUT_S", "120"))
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_LIBRARIAN_KEY = os.getenv("SUPABASE_LIBRARIAN_KEY", "")
 ALLOW_SIGNUP = os.getenv("LIBRARIAN_ALLOW_SIGNUP", "1") == "1"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -71,7 +74,7 @@ PUBLIC_ID_PATTERN = re.compile(r"[0-9a-f]{16}")
 # proxies between here and the browser don't close it as idle.
 HEARTBEAT_S = 15.0
 
-db = DbClient(DATABASE_URL)
+db = DbClient(SUPABASE_URL, anon_key=SUPABASE_ANON_KEY, key=SUPABASE_LIBRARIAN_KEY)
 librarian = LibrarianClient(
     LIBRARIAN_URL, api_key=LIBRARIAN_API_KEY, timeout_s=LIBRARIAN_TIMEOUT_S
 )
@@ -82,7 +85,7 @@ logger = logging.getLogger("uvicorn.error")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
-        db.ensure_schema()
+        db.check()
     except ServiceUnavailable:
         logger.warning("The database is unreachable; the first request that needs it tries again.")
     yield
@@ -123,6 +126,7 @@ class Registration(Credentials):
     """Request body for register. Defaults let a missing field reach the
     handler's own check, which says which field it is."""
 
+    confirm_password: str = ""
     institution: str = Field(default="", max_length=200)
     position: str = Field(default="", max_length=200)
 
@@ -179,6 +183,8 @@ def register(creds: Registration, request: Request, response: Response) -> Dict[
         raise HTTPException(400, "Enter a valid email address.")
     if len(creds.password) < 8:
         raise HTTPException(400, "Passwords need at least 8 characters.")
+    if creds.confirm_password != creds.password:
+        raise HTTPException(400, "Passwords don't match.")
     institution, position = creds.institution.strip(), creds.position.strip()
     if not institution:
         raise HTTPException(400, "Institution / Company is required.")

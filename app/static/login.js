@@ -24,6 +24,9 @@ const svg = (path) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${p
 const EMAIL_OK = `${svg('<path d="M20 6 9 17l-5-5"/>')} Valid email address`;
 const EMAIL_BAD = `${svg('<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>')} Enter a valid email, like name@institute.org`;
 let emailTouched = false; // no red while typing a first address, only once the reader leaves the field
+const CONFIRM_OK = `${svg('<path d="M20 6 9 17l-5-5"/>')} Passwords match`;
+const CONFIRM_BAD = `${svg('<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>')} Passwords don't match`;
+let confirmTouched = false; // likewise for the confirm-password field
 
 // Where to go once signed in: the page that sent the reader here (?next=), but
 // only a page on this site. Resolving it as a URL catches "//host" and "/\host",
@@ -54,6 +57,25 @@ form.elements.email.addEventListener("blur", () => {
   checkEmail();
 });
 
+// Show under the confirm field whether it matches the password. Returns whether they match.
+function checkConfirm() {
+  const value = form.elements.confirm_password.value;
+  const valid = value === form.elements.password.value;
+  const shown = mode === "register" && Boolean(value) && (valid || confirmTouched);
+  $("#confirm-field").classList.toggle("valid", shown && valid);
+  $("#confirm-field").classList.toggle("invalid", shown && !valid);
+  form.elements.confirm_password.setAttribute("aria-invalid", String(shown && !valid));
+  $("#confirm-status").hidden = !shown;
+  $("#confirm-status").innerHTML = valid ? CONFIRM_OK : CONFIRM_BAD;
+  return valid;
+}
+form.elements.confirm_password.addEventListener("input", checkConfirm);
+form.elements.password.addEventListener("input", checkConfirm);
+form.elements.confirm_password.addEventListener("blur", () => {
+  confirmTouched = true;
+  checkConfirm();
+});
+
 function setMode(next) {
   mode = next;
   const copy = MODES[mode];
@@ -62,6 +84,7 @@ function setMode(next) {
   $("#auth-hint").textContent = copy.hint;
   form.elements.password.autocomplete = copy.autocomplete;
   document.querySelectorAll(".register-only").forEach((field) => (field.hidden = mode !== "register"));
+  checkConfirm(); // the password may have changed while the field was hidden
   $("#auth-error").hidden = true;
   document.querySelectorAll(".tabs button").forEach((tab) => tab.classList.toggle("active", tab.dataset.mode === mode));
 }
@@ -74,12 +97,15 @@ form.addEventListener("submit", async (event) => {
   const submit = $("#auth-submit");
   const body = { email: form.elements.email.value.trim(), password: form.elements.password.value };
   if (mode === "register") {
+    body.confirm_password = form.elements.confirm_password.value;
     body.institution = form.elements.institution.value.trim();
     body.position = form.elements.position.value.trim();
   }
   emailTouched = true;
+  confirmTouched = true;
   if (Object.values(body).some((value) => !value)) {
     checkEmail();
+    checkConfirm();
     error.textContent = "Fill in every field marked *.";
     error.hidden = false;
     return;
@@ -87,6 +113,11 @@ form.addEventListener("submit", async (event) => {
   if (!checkEmail()) {
     error.hidden = true; // the message under the email field says why
     form.elements.email.focus();
+    return;
+  }
+  if (mode === "register" && !checkConfirm()) {
+    error.hidden = true; // the message under the confirm field says why
+    form.elements.confirm_password.focus();
     return;
   }
   submit.disabled = true;

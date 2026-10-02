@@ -2,10 +2,22 @@
 # docker-compose.yml, setting the same environment, with every other service
 # on 127.0.0.1 instead of its compose host name.
 #
-# Ports inside the container. Only the gateway (8765), Postgres (5432) and the
+# The settings: postgres-db/.env, which the image includes as ~/.env, each line
+# read literally. What docker run passes (-e, --env-file) wins over it.
+load_env() {
+    local line key
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in '' | '#'*) continue ;; esac
+        key=${line%%=*}
+        [ -n "${!key:-}" ] || export "$line"
+    done < "$1"
+}
+load_env "$HOME/.env"
+
+# Ports inside the container. Only the gateway (9876), Postgres (5432) and the
 # pooler (5433, 6543) are for outside use; the others are reached through the
 # gateway, as in the compose stack.
-GATEWAY_PORT=8765
+GATEWAY_PORT=9876
 STUDIO_PORT=3000
 REST_PORT=3001        # 3000 in compose, which Studio has here
 REST_ADMIN_PORT=3002  # 3001 in compose

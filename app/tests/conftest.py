@@ -25,7 +25,7 @@ class FakeDb:
         if self.down:
             raise unavailable(DB_NAME)
 
-    def ensure_schema(self):
+    def check(self):
         self._up()
 
     @staticmethod

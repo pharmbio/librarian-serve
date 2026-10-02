@@ -5,7 +5,8 @@ import main
 from librarian_client import LibrarianBusy, LibrarianError
 from service_http import unavailable
 
-ACCOUNT = {"email": "Ada@Example.org", "password": "correct horse", "institution": "EMBL", "position": "PI"}
+ACCOUNT = {"email": "Ada@Example.org", "password": "correct horse", "confirm_password": "correct horse",
+           "institution": "EMBL", "position": "PI"}
 
 
 def register(client, **overrides):
@@ -46,8 +47,13 @@ def test_register_signs_in(client):
     assert client.get("/api/me").json() == user
 
 
-def test_register_checks(client, monkeypatch):
-    assert client.post("/api/auth/register", json={**ACCOUNT, "password": "short"}).status_code == 400
+def test_register_checks(client, fake_db, monkeypatch):
+    assert client.post("/api/auth/register", json={**ACCOUNT, "password": "short", "confirm_password": "short"}).status_code == 400
+    mismatch = client.post("/api/auth/register", json={**ACCOUNT, "confirm_password": "correct horses"})
+    assert mismatch.status_code == 400 and mismatch.json()["detail"] == "Passwords don't match."
+    no_confirm = {k: v for k, v in ACCOUNT.items() if k != "confirm_password"}
+    assert client.post("/api/auth/register", json=no_confirm).json()["detail"] == "Passwords don't match."
+    assert not fake_db.users  # none of those created an account
     assert client.post("/api/auth/register", json={**ACCOUNT, "position": " "}).json()["detail"] == "Position is required."
     register(client)
     duplicate = client.post("/api/auth/register", json={**ACCOUNT, "email": "ADA@example.org"})

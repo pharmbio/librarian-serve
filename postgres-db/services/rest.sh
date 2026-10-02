@@ -6,6 +6,12 @@ log_as rest
 wait_for_db
 
 export PGRST_DB_URI="postgres://authenticator:${POSTGRES_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+# Always with librarian, the schema of Librarian's app, which reaches its
+# tables only through this API. Only the role librarian may use it.
+case ",$PGRST_DB_SCHEMAS," in
+    *,librarian,*) ;;
+    *) PGRST_DB_SCHEMAS="$PGRST_DB_SCHEMAS,librarian" ;;
+esac
 export PGRST_DB_SCHEMAS
 export PGRST_DB_MAX_ROWS=${PGRST_DB_MAX_ROWS:-1000}
 export PGRST_DB_EXTRA_SEARCH_PATH=${PGRST_DB_EXTRA_SEARCH_PATH:-public}

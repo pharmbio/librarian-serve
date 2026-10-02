@@ -93,19 +93,27 @@ COPY --from=gateway /usr/local/bin/envoy /usr/local/bin/
 # The gateway writes its listener config next to the template at start.
 COPY --chown=$USER:$USER config/envoy/ /etc/envoy/
 COPY config/pooler.exs /etc/pooler/pooler.exs
+# The tables of Librarian's app, which services/schema.sh applies at each start.
+COPY config/librarian/ /etc/librarian/migrations/
 # functions/main/index.ts serves every function from this folder, as in compose.
 COPY functions/ /home/deno/functions/
 
 WORKDIR $HOME
 COPY --chmod=0755 services/ services/
 COPY --chmod=0755 start-script.sh healthcheck.sh ./
+# The settings, secrets included (services/lib.sh loads them): build with
+# postgres-db/.env in place. docker run -e or --env-file overrides any of them.
+COPY --chown=$USER:$USER --chmod=0600 .env ./
 COPY supervisord.conf ./
 
 USER $USER
 
-# 8765: the gateway (Studio and the APIs). 5432: Postgres. 5433 and 6543: the
+# Volume mount for the data directory:
+VOLUME [ "/home/supabase/data" ]
+
+# 9876: the gateway (Studio and the APIs). 5432: Postgres. 5433 and 6543: the
 # pooler, in session and transaction mode.
-EXPOSE 8765 5432 5433 6543
+EXPOSE 9876 5432 5433 6543
 HEALTHCHECK --interval=10s --timeout=10s --start-period=120s --retries=3 \
     CMD ["./healthcheck.sh"]
 # Serve starts the container with the start-up script in WORKDIR.

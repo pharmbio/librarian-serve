@@ -39,6 +39,10 @@
           <input name="password" type="password" autocomplete="current-password" required>
         </label>
         <!-- Create account only; setMode() shows them. -->
+        <label class="field register-only" id="confirm-field" hidden>Confirm password <span class="req">*</span>
+          <input name="confirm_password" type="password" autocomplete="new-password" aria-describedby="confirm-status" required>
+          <span class="field-status" id="confirm-status" aria-live="polite" hidden></span>
+        </label>
         <label class="field register-only" hidden>Institution / Company <span class="req">*</span>
           <input name="institution" autocomplete="organization" maxlength="200" required>
         </label>
