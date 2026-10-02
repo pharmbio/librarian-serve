@@ -103,6 +103,14 @@ def test_blocking_run(client):
     assert set(result) == {"answer", "evidence", "run_id"}
 
 
+def test_runs_always_read_full_text(client, fake_db, fake_librarian):
+    register(client)
+    client.post("/run-agent", json={"query": "q", "full_text_enrichment": False})  # no longer an option
+    assert fake_librarian.full_text_enrichment is True
+    (query,) = fake_db.queries.values()
+    assert query["full_text_enrichment"] is True
+
+
 def test_runs_need_a_session(client):
     assert client.post("/run-agent/stream", json={"query": "q"}).status_code == 401
 

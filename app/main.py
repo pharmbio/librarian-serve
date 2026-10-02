@@ -70,6 +70,8 @@ SESSION_COOKIE = "librarian_session"
 SESSION_DAYS = 30
 EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 PUBLIC_ID_PATTERN = re.compile(r"[0-9a-f]{16}")
+# Every run reads open-access full text, as the librarian does by default.
+FULL_TEXT_ENRICHMENT = True
 # A stream with nothing to report for this long gets a keep-alive comment, so
 # proxies between here and the browser don't close it as idle.
 HEARTBEAT_S = 15.0
@@ -237,10 +239,6 @@ class RunRequest(BaseModel):
     query: str = Field(
         ..., min_length=1, max_length=2000, description="Natural-language question."
     )
-    full_text_enrichment: bool = Field(
-        default=True,
-        description="Rank over full-text paragraphs; false falls back to abstracts only.",
-    )
 
 
 def _run_for_user(user_id: str, request: RunRequest, **callbacks: Any) -> Dict[str, Any]:
@@ -255,12 +253,12 @@ def _run_for_user(user_id: str, request: RunRequest, **callbacks: Any) -> Dict[s
     :returns: The librarian's ``{answer, evidence}`` plus the ``run_id`` it
         was saved under.
     """
-    query = db.create_query(user_id, request.query, request.full_text_enrichment)
+    query = db.create_query(user_id, request.query, FULL_TEXT_ENRICHMENT)
     run_id = db.create_run(query["id"])["id"]
     db.update_run(run_id, status="running")
     started = time.monotonic()
     try:
-        result = librarian.run(request.query, request.full_text_enrichment, **callbacks)
+        result = librarian.run(request.query, FULL_TEXT_ENRICHMENT, **callbacks)
     except Exception as exc:
         _record_failure(run_id, exc, started)
         raise

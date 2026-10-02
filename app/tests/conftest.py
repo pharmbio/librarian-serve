@@ -107,9 +107,11 @@ class FakeLibrarian:
     def __init__(self) -> None:
         self.error = None
         self.calls = 0
+        self.full_text_enrichment = None
 
     def run(self, query, full_text_enrichment=True, on_progress=None, on_queries=None, on_evidence=None):
         self.calls += 1
+        self.full_text_enrichment = full_text_enrichment
         if self.error:
             raise self.error
         if on_progress:

@@ -164,9 +164,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   width: 100%; min-height: 80px; border: 0; outline: 0; resize: none; background: transparent;
   font-size: 17px; line-height: 1.5;
 }
-.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; }
-.switch { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13.5px; cursor: pointer; user-select: none; }
-.switch input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.composer-bar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 6px; }
 .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .chip {
   padding: 7px 12px; border: 1px solid var(--border); border-radius: 999px;

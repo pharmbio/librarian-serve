@@ -141,16 +141,16 @@ async function loadHistory() {
 // Ask a question: stream the run's events from the server and render
 // them as they come. The server keeps going if this page goes away, and the
 // finished run lands in the history either way.
-async function ask(query, fullText) {
+async function ask(query) {
   if (state.live && !state.live.finished) return toast("A question is already running.");
-  const live = { query, fullText, stage: 0, message: "Starting", started: Date.now(), queries: null, evidence: null, error: null, finished: false };
+  const live = { query, stage: 0, message: "Starting", started: Date.now(), queries: null, evidence: null, error: null, finished: false };
   state.live = live;
   go("/", { live: true });
   try {
     const response = await fetch("/run-agent/stream", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query, full_text_enrichment: fullText }),
+      body: JSON.stringify({ query }),
     });
     if (response.status === 401) return toLogin();
     if (!response.ok) throw new Error(errorText(await response.json().catch(() => ({})), response.status));
@@ -245,7 +245,6 @@ function renderHome() {
       <form class="composer" id="composer">
         <textarea name="query" rows="3" maxlength="2000" placeholder="Ask a biomedical research question…" aria-label="Your question"></textarea>
         <div class="composer-bar">
-          <label class="switch"><input type="checkbox" name="fulltext" checked> Read open-access full text</label>
           <button class="btn primary" type="submit">Ask ${icon("arrowUp")}</button>
         </div>
       </form>
@@ -268,7 +267,7 @@ function renderHome() {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const query = box.value.trim();
-    if (query) ask(query, form.elements.fulltext.checked);
+    if (query) ask(query);
   });
   view.querySelectorAll(".chip").forEach((chip) =>
     chip.addEventListener("click", () => {
@@ -286,7 +285,7 @@ function renderLive() {
   const answer = live.error
     ? errorPanel("The run failed", live.error, `<button class="btn" data-action="retry">Try again</button>`)
     : `<div class="panel"><div class="label">Answer</div>${"<div class=skeleton></div>".repeat(5)}<div class="skeleton" style="width:60%"></div>
-        <p class="note">${live.evidence ? "Evidence is in. Writing the answer…" : `${live.fullText ? "Reading open-access full text takes a few minutes." : "Abstract-only runs usually finish within a minute."} You can leave this page: the answer is saved to your history.`}</p></div>`;
+        <p class="note">${live.evidence ? "Evidence is in. Writing the answer…" : "Reading open-access full text takes a few minutes. You can leave this page: the answer is saved to your history."}</p></div>`;
   const evidence = live.evidence
     ? evidenceColumn(state.papers)
     : live.error
@@ -470,7 +469,7 @@ function toMarkdown(run) {
 }
 
 const ACTIONS = {
-  retry: () => ask(state.live.query, state.live.fullText),
+  retry: () => ask(state.live.query),
   copy: async () => {
     await navigator.clipboard.writeText(state.shown.answer);
     toast("Answer copied as Markdown");
