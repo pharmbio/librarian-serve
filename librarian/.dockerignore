@@ -1,7 +1,9 @@
-# The image needs only the librarian/ package, orchestrator.py, main.py,
-# start-script.sh and .env, the settings.
+# The image needs only the librarian/ package, orchestrator.py, main.py and
+# start-script.sh. The settings, secrets included, are set on the container:
+# no image has them.
 .venv/
 **/__pycache__/
+**/.DS_Store
 .agents/
 .claude-plugin/
 .codex-plugin/
@@ -9,4 +11,4 @@ assets/
 data/
 skills/
 tests/
-.env
+**/.env*

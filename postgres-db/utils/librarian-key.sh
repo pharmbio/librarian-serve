@@ -10,7 +10,8 @@
 #
 # Usage, after generate-keys.sh:  sh utils/librarian-key.sh
 #
-# A new JWT_SECRET invalidates the key: run this again, and rebuild the app.
+# A new JWT_SECRET invalidates the key: run this again, and restart the app
+# with the new one.
 
 set -e
 cd "$(dirname "$0")/.."

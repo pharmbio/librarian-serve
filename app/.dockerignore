@@ -2,4 +2,6 @@
 tests/
 .pytest_cache/
 **/__pycache__/
-.env
+**/.DS_Store
+# The settings, secrets included, are set on the container: no image has them.
+**/.env*

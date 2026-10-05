@@ -1,7 +1,9 @@
 # The app service: the web UI and its API on :8080. It calls the librarian at
 # LIBRARIAN_URL, keeps its data in the Supabase container's database through
 # its REST API at SUPABASE_URL, and starts whether or not they are up. Its
-# settings are app/.env, which the image includes and main.py loads.
+# settings, secrets included, are set on the container (app/.env.example): on
+# the hosting platform, or with docker run --env-file app/.env. No image has
+# them.
 # Build from this folder:  docker build -t librarian-app .
 FROM ghcr.io/astral-sh/uv:0.11.21 AS uv
 

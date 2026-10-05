@@ -2,8 +2,10 @@
 # docker-compose.yml, setting the same environment, with every other service
 # on 127.0.0.1 instead of its compose host name.
 #
-# The settings: postgres-db/.env, which the image includes as ~/.env, each line
-# read literally. What docker run passes (-e, --env-file) wins over it.
+# The settings: the variables set on the container (on the hosting platform, or
+# with docker run -e or --env-file), the secrets among them, and for the rest
+# postgres-db/settings.env, which the image includes as ~/settings.env, each
+# line read literally. A variable set on the container wins over its line.
 load_env() {
     local line key
     while IFS= read -r line || [ -n "$line" ]; do
@@ -12,7 +14,7 @@ load_env() {
         [ -n "${!key:-}" ] || export "$line"
     done < "$1"
 }
-load_env "$HOME/.env"
+load_env "$HOME/settings.env"
 
 # Ports inside the container. Only the gateway (9876), Postgres (5432) and the
 # pooler (5433, 6543) are for outside use; the others are reached through the

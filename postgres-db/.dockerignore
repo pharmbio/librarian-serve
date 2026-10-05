@@ -1,4 +1,6 @@
-# The image needs everything here except utils/ and generate-keys.sh's backup
-# of .env. It does include .env: the settings, secrets included.
+# The image needs everything here except utils/ and the settings with secrets:
+# .env and generate-keys.sh's backup of it, .env.old. Those are set on the
+# container, and no image has them. settings.env, the rest, it does include.
 utils/
-.env
+**/.DS_Store
+**/.env*

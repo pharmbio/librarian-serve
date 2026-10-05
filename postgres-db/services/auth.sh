@@ -1,7 +1,7 @@
 #!/bin/bash
-# auth: GoTrue (supabase/gotrue). Any other GOTRUE_* variable in .env, such as
-# the OAuth, SMS or MFA settings commented out in docker-compose.yml, reaches
-# it unchanged.
+# auth: GoTrue (supabase/gotrue). Any other GOTRUE_* variable set on the
+# container, such as the OAuth, SMS or MFA settings commented out in
+# docker-compose.yml, reaches it unchanged.
 source "$(dirname "$0")/lib.sh"
 log_as auth
 wait_for_db

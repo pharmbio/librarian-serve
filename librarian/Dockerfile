@@ -1,6 +1,8 @@
 # The librarian service: the agent behind a small HTTP API on :7680
-# (orchestrator.py). Stateless; the LLM backend is set by LLM_* in .env, which
-# the image includes and orchestrator.py loads.
+# (orchestrator.py). Stateless; the LLM backend is set by LLM_*. Its settings,
+# secrets included, are set on the container (librarian/.env.example): on the
+# hosting platform, or with docker run --env-file librarian/.env. No image has
+# them.
 # Build from this folder:  docker build -t librarian .
 FROM ghcr.io/astral-sh/uv:0.11.21 AS uv
 

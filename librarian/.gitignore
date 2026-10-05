@@ -4,7 +4,9 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
-.env
+# .env, and backups such as .env.old
+.env*
+!.env.example
 
 # raw screen recordings; README uses the GIFs
 assets/*.mov

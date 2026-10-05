@@ -65,7 +65,10 @@ cp app/.env.example app/.env
 
 ### Step 2: Build the images
 
-Each image includes its folder's `.env`, so build it again after changing one.
+No image includes a `.env` file or any secret, so the images can be pushed to
+a public registry. Each container gets its settings when it starts: below with
+`--env-file`, and on Serve from the variables set in each app's settings, one
+per line of its folder's `.env.example`.
 
 ```bash
 docker build -t librarian-supabase:latest postgres-db/
@@ -78,9 +81,9 @@ docker build -t librarian-app:latest app/
 Each in a terminal of its own:
 
 ```bash
-docker run --rm -it -p 9876:9876 librarian-supabase:latest
-docker run --rm -it -p 7680:7680 librarian:latest
-docker run --rm -it -p 8080:8080 librarian-app:latest
+docker run --rm -it -p 9876:9876 --env-file postgres-db/.env librarian-supabase:latest
+docker run --rm -it -p 7680:7680 --env-file librarian/.env librarian:latest
+docker run --rm -it -p 8080:8080 --env-file app/.env librarian-app:latest
 ```
 
 Note: Ctrl+C stops a container, and `--rm` then deletes it, with its data.
@@ -126,7 +129,8 @@ restarts any that stops, and stops them in order.
 | `functions/` | The edge functions, served from `/home/deno/functions`. |
 | `utils/generate-keys.sh` | Supabase's script that generates every secret in `.env`. |
 | `utils/librarian-key.sh` | Prints the app's two keys, for `app/.env`. |
-| `.env.example` | Every setting. Copy it to `postgres-db/.env`, which the image includes. |
+| `.env.example` | The settings to set on the container: the secrets and the URLs. Copy it to `postgres-db/.env`, for `docker run --env-file`. |
+| `settings.env` | Every other setting, which the image includes. A variable set on the container wins over its line. |
 
 
 ### Persistence volume
@@ -176,8 +180,8 @@ The database keeps the passwords from its first start -> Changing
 `POSTGRES_PASSWORD` in `postgres-db/.env` afterwards changes nothing in it,
 and the services then fail.
 
-Change the password in the database first, then in `.env`, and rebuild and
-recreate the container:
+Change the password in the database first, then in `postgres-db/.env` (or the
+platform's settings), and recreate the container:
 
 ```bash
 # POSTGRES_PASSWORD: every role that Supabase's services log in as
@@ -196,9 +200,11 @@ The pooler picks up a new `POSTGRES_PASSWORD` by itself on its next start.
 The app's key, `SUPABASE_LIBRARIAN_KEY`, stays valid for 5 years, or until
 `JWT_SECRET` changes. A new `JWT_SECRET` also needs new `ANON_KEY` and
 `SERVICE_ROLE_KEY`, which are signed with it. Then run `librarian-key.sh`
-again, put its output in `app/.env`, and rebuild both images.
+again, put its output in `app/.env` (or the platform's settings), and restart
+both containers.
 
-If `supabase` stops at once with `Not set: …`, `postgres-db/.env` lacked those
-settings when the image was built.
+If `supabase` stops at once with `Not set: …`, the container was started
+without those settings: pass `--env-file postgres-db/.env`, or set them on the
+platform.
 
 

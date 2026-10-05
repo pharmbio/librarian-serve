@@ -1,7 +1,7 @@
 #!/bin/bash
 # storage: Supabase Storage (supabase/storage-api), with its files under
-# DATA_DIR. STORAGE_BACKEND=s3 and the GLOBAL_S3_* variables in .env switch it
-# to S3, as docker-compose.s3.yml does.
+# DATA_DIR. STORAGE_BACKEND=s3 and the GLOBAL_S3_* variables, set on the
+# container, switch it to S3, as docker-compose.s3.yml does.
 source "$(dirname "$0")/lib.sh"
 log_as storage
 wait_for_db

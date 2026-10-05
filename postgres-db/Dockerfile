@@ -101,10 +101,9 @@ COPY functions/ /home/deno/functions/
 WORKDIR $HOME
 COPY --chmod=0755 services/ services/
 COPY --chmod=0755 start-script.sh healthcheck.sh ./
-# The settings, secrets included (services/lib.sh loads them): build with
-# postgres-db/.env in place. docker run -e or --env-file overrides any of them.
-COPY --chown=$USER:$USER --chmod=0600 .env ./
-COPY supervisord.conf ./
+# The settings that are no secrets (services/lib.sh loads them). The secrets
+# and the URLs are set on the container (.env.example), and no image has them.
+COPY settings.env supervisord.conf ./
 
 USER $USER
 
