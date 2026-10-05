@@ -135,6 +135,18 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 .empty { color: var(--faint); font-size: 13.5px; padding: 12px 8px; margin: 0; }
 
+/* "Hosted on SciLifeLab Serve". The wordmark's text is near-black, so the dark
+   theme swaps in serve-light.svg, the same logo with white text. */
+.hosted {
+  display: flex; align-items: center; gap: 8px; padding: 2px 6px;
+  color: var(--faint); font-size: 12px; font-weight: 500;
+}
+.hosted:hover { color: var(--muted); text-decoration: none; }
+.serve-logo { display: block; height: 18px; width: auto; }
+.serve-logo.on-dark { display: none; }
+:root[data-theme="dark"] .serve-logo.on-light { display: none; }
+:root[data-theme="dark"] .serve-logo.on-dark { display: block; }
+
 .me { display: flex; align-items: center; gap: 8px; padding: 12px 4px 0; border-top: 1px solid var(--border); }
 .avatar {
   width: 32px; height: 32px; border-radius: 50%; flex: none; display: grid; place-items: center;
@@ -345,6 +357,9 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .auth-foot { color: rgb(230 243 241 / 70%); font-size: 14px; text-align: center; }
 .auth-foot a { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+.auth-foot .hosted { justify-content: center; margin-bottom: 10px; color: inherit; font-size: 13px; text-decoration: none; }
+.auth-foot .hosted:hover { color: #fff; }
+.auth-foot .serve-logo { height: 22px; }
 .auth-card h2 { margin: 0 0 22px; font-family: var(--serif); font-size: 28px; font-weight: 600; letter-spacing: -.01em; }
 .tabs { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 22px; padding: 4px; border-radius: 12px; background: var(--surface-2); }
 .tabs button { height: 36px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-weight: 500; cursor: pointer; }
