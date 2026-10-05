@@ -65,11 +65,6 @@ cp app/.env.example app/.env
 
 ### Step 2: Build the images
 
-No image includes a `.env` file or any secret, so the images can be pushed to
-a public registry. Each container gets its settings when it starts: below with
-`--env-file`, and on Serve from the variables set in each app's settings, one
-per line of its folder's `.env.example`.
-
 ```bash
 docker build -t librarian-supabase:latest postgres-db/
 docker build -t librarian:latest librarian/
