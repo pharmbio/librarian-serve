@@ -1,5 +1,6 @@
 """Client for the librarian service's API (../librarian). The app asks it every
-question through here, and follows the run's progress as it streams."""
+question through here, with the conversation so far, and follows the run's
+progress as it streams."""
 
 import json
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -34,24 +35,34 @@ class LibrarianClient:
         self,
         query: str,
         full_text_enrichment: bool = True,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
+        on_route: Optional[Callable[[Dict[str, str]], None]] = None,
         on_queries: Optional[Callable[[List[str]], None]] = None,
         on_evidence: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Ask one question, passing its progress to the callbacks as the
         librarian streams it.
 
+        :param conversation_history: The earlier turns, oldest first, as
+            ``{"role": "user" | "assistant", "content": ...}``.
         :param on_progress: Called with a short status string at each stage.
+        :param on_route: Called with ``{action, query, language}`` once the
+            librarian has decided to search (``query`` is then the standalone
+            question it searches) or to reply from the conversation.
         :param on_queries: Called with the Europe PMC sub-queries once found.
         :param on_evidence: Called with the evidence once retrieval ends.
-        :returns: ``{"answer": markdown, "evidence": {query, search_queries, papers}}``.
+        :returns: ``{"action": "search" | "reply", "answer": markdown, "query",
+            "language", "evidence": {query, search_queries, papers}}``.
         :raises LibrarianBusy: if the librarian is busy with other questions.
         :raises LibrarianError: if it failed to answer this one.
         :raises ServiceUnavailable: if it is down or stops responding.
         """
-        for event, payload in self._events(query, full_text_enrichment):
+        for event, payload in self._events(query, full_text_enrichment, conversation_history or []):
             if event == "progress" and on_progress:
                 on_progress(payload["message"])
+            elif event == "route" and on_route:
+                on_route(payload)
             elif event == "queries" and on_queries:
                 on_queries(payload["search_queries"])
             elif event == "evidence" and on_evidence:
@@ -64,14 +75,20 @@ class LibrarianClient:
             f"The {NAME} closed the connection before answering. Please try again in a minute."
         )
 
-    def _events(self, query: str, full_text_enrichment: bool) -> Iterator[Tuple[str, Any]]:
+    def _events(
+        self, query: str, full_text_enrichment: bool, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[Tuple[str, Any]]:
         """The run's Server-Sent Events as ``(event, payload)`` pairs.
 
         A POST starts a run, so it is only retried when it never reached the
         librarian. Running it twice would do the work, and spend LLM calls, twice.
         """
         url = f"{self.base_url}/api/v1/process/stream"
-        body = {"query": query, "full_text_enrichment": full_text_enrichment}
+        body = {
+            "query": query,
+            "full_text_enrichment": full_text_enrichment,
+            "conversation_history": conversation_history,
+        }
         response = send(
             self._session,
             "POST",

@@ -1,8 +1,10 @@
 // Librarian web UI. Every call goes to the app service's API (../main.py); this file only
-// renders what comes back. Routes: / (ask), /<user id>/<run id> (a saved run).
-// The run in progress has no URL of its own: it is / with {live: true} in
-// history.state, so a reload lands on the ask page, as the page has lost the
-// run's stream by then.
+// renders what comes back. Routes: / (ask), /<user id>/<conversation id> (a conversation).
+// A conversation is a thread of turns: a question and its answer, each searching Europe PMC
+// or answered from the conversation itself. Follow-ups are asked at the bottom of the thread.
+// The first turn of a new conversation has no URL of its own while it runs: it is / with
+// {live: true} in history.state, so a reload lands on the ask page, as the page has lost the
+// run's stream by then. A follow-up runs on its conversation's own page.
 import { marked } from "https://cdn.jsdelivr.net/npm/marked@18.0.14/lib/marked.esm.js";
 import DOMPurify from "https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.es.mjs";
 
@@ -16,9 +18,17 @@ const EXAMPLES = [
   "Do TREM2 loss-of-function variants increase Alzheimer's disease risk?",
 ];
 
+// Follow-ups that show what a conversation can do: dig into an answer, or search again.
+const FOLLOW_UPS = [
+  "What are the main limitations of this evidence?",
+  "Find more recent papers on this.",
+  "Which study had the largest cohort?",
+];
+
 // The pipeline's stages, in order. stageOf() maps each progress message the
 // librarian streams onto one of them.
 const STAGES = [
+  ["Read the question", "Deciding whether it needs a new search"],
   ["Plan searches", "Turning the question into Europe PMC queries"],
   ["Search Europe PMC", "Fetching papers and ranking paragraphs"],
   ["Judge evidence", "Keeping only the sentences that answer"],
@@ -42,17 +52,22 @@ const ICONS = {
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
   code: '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  followUp: '<path d="m15 10 5 5-5 5"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
 };
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
 const state = {
   me: null, // the signed-in user: {id, email}
-  runs: [], // history list: {id, query, paper_count, duration_s, created_at}
-  cache: new Map(), // run path -> full run, so reopening one is instant
-  live: null, // the question being answered right now
-  shown: null, // the saved run on screen, for the toolbar actions
-  papers: [], // papers on screen, for re-sorting
-  cited: new Set(), // indexes of those papers the answer cites
+  conversations: [], // history list: {id, title, turn_count, paper_count, created_at, last_turn_at}
+  cache: new Map(), // conversation path -> full conversation, so reopening one is instant
+  live: null, // the turn being answered right now
+  shown: null, // the conversation on screen, for the toolbar actions
+  drafts: new Map(), // conversation id -> unsent follow-up, kept across re-renders
+  evidenceKey: null, // whose papers the evidence column shows: a turn's index, or "live"
+  citedRefs: new Set(), // "<turn>:<paper index>" of every paper an answer on screen cites
+  papers: [], // papers in the evidence column, for re-sorting
+  cited: new Set(), // indexes of those papers some answer cites
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -64,11 +79,13 @@ const esc = (value) =>
 // those tags; parsing the text as HTML would eat a literal "IC50<10 nM".
 const plain = (text) => String(text ?? "").replace(/<\/?(i|b|em|strong|sup|sub|u|h\d|p|br|span)\b[^>]*>/gi, "");
 
-// SQLite's CURRENT_TIMESTAMP is UTC without a zone marker.
+// Times come as UTC without a zone marker.
 const parseTime = (stamp) => new Date(stamp.replace(" ", "T") + "Z");
 const nowStamp = () => new Date().toISOString().slice(0, 19).replace("T", " ");
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "librarian";
+const clip = (text, length) => (text.length > length ? `${text.slice(0, length - 1).trimEnd()}…` : text);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 function shortAuthors(authors) {
   const names = String(authors).replace(/\.$/, "").split(",").map((name) => name.trim()).filter(Boolean);
@@ -76,9 +93,10 @@ function shortAuthors(authors) {
 }
 
 function stageOf(message) {
-  if (message.startsWith("Writing")) return 3;
-  if (message.startsWith("Judging")) return 2;
-  if (message.startsWith("Searching") || message.startsWith("Found")) return 1;
+  if (message.startsWith("Writing")) return 4;
+  if (message.startsWith("Judging")) return 3;
+  if (message.startsWith("Searching") || message.startsWith("Found")) return 2;
+  if (message.startsWith("Generating") || message.startsWith("Validating")) return 1;
   return 0;
 }
 
@@ -103,11 +121,15 @@ function download(filename, text, type) {
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
-// A run's user id and run id are 16 hex characters (models.py's new_id),
+// A user id and a conversation id are 16 hex characters (db_client.py's new_id),
 // the only paths the server answers with this page.
-const RUN_PATH = /^\/([0-9a-f]{16})\/([0-9a-f]{16})$/;
-const runPath = (runId) => `/${state.me.id}/${runId}`;
+const PAGE_PATH = /^\/([0-9a-f]{16})\/([0-9a-f]{16})$/;
+const conversationPath = (conversationId) => `/${state.me.id}/${conversationId}`;
 const onLive = () => history.state?.live === true;
+// Whether the turn being answered is on screen: a new conversation's first
+// turn on / (live), a follow-up on its conversation's page.
+const liveHere = () =>
+  Boolean(state.live) && (state.live.isNew ? onLive() : location.pathname === conversationPath(state.live.conversationId));
 
 // Navigate and re-render. Going where we already are replaces the history
 // entry rather than stacking a duplicate.
@@ -133,24 +155,34 @@ async function api(path, options = {}) {
   return body;
 }
 
-async function loadHistory() {
-  state.runs = await api(`/api/users/${state.me.id}/runs`);
+async function loadConversations() {
+  state.conversations = await api(`/api/users/${state.me.id}/conversations`);
   renderHistory();
 }
 
-// Ask a question: stream the run's events from the server and render
-// them as they come. The server keeps going if this page goes away, and the
-// finished run lands in the history either way.
-async function ask(query) {
+// Ask a question: a new conversation's first, or a follow-up in `conversationId`.
+// Stream the run's events from the server and render them as they come. The
+// server keeps going if this page goes away, and the finished turn lands in its
+// conversation either way. `isNew` stays true when retrying a first turn that
+// failed: its conversation has no answer to show yet, so it stays on /.
+async function ask(query, conversationId = null, { isNew = !conversationId } = {}) {
   if (state.live && !state.live.finished) return toast("A question is already running.");
-  const live = { query, stage: 0, message: "Starting", started: Date.now(), queries: null, evidence: null, error: null, finished: false };
+  const live = {
+    query, conversationId, isNew, stage: 0, message: "Starting", started: Date.now(),
+    route: null, queries: null, evidence: null, error: null, finished: false,
+  };
   state.live = live;
-  go("/", { live: true });
+  if (isNew) go("/", { live: true });
+  else {
+    state.drafts.delete(conversationId);
+    go(conversationPath(conversationId));
+    $("#live-turn")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   try {
     const response = await fetch("/run-agent/stream", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, conversation_id: conversationId }),
     });
     if (response.status === 401) return toLogin();
     if (!response.ok) throw new Error(errorText(await response.json().catch(() => ({})), response.status));
@@ -183,81 +215,107 @@ async function readEvents(response, handle) {
 function onRunEvent(event, data) {
   const live = state.live;
   if (!live || live.finished) return;
+  if (event === "started") live.conversationId = data.conversation_id;
   if (event === "progress") Object.assign(live, { stage: stageOf(data.message), message: data.message });
+  if (event === "route") live.route = data;
   if (event === "queries") live.queries = data.search_queries;
   if (event === "evidence") live.evidence = data;
   if (event === "error") Object.assign(live, { error: data.error, finished: true });
-  if (event === "result") {
-    live.finished = true;
-    const path = runPath(data.run_id);
-    state.cache.set(path, {
-      id: data.run_id, query: live.query, answer: data.answer, evidence: data.evidence,
-      created_at: nowStamp(), duration_s: (Date.now() - live.started) / 1000,
-    });
-    state.live = null;
-    loadHistory();
-    if (onLive()) go(path, { replace: true });
-    else toast("Your answer is ready. It's at the top of your history.");
-    return;
+  if (event === "result") return onResult(live, data);
+  if (liveHere()) {
+    if (live.isNew) renderNewLive();
+    else {
+      const el = $("#live-turn");
+      if (el) el.innerHTML = liveTurnHtml(live);
+      // The evidence column follows the turn being answered once its papers are in.
+      if (event === "evidence") {
+        state.evidenceKey = "live";
+        renderEvidence();
+      }
+    }
   }
-  if (onLive()) renderLive();
   renderHistory();
+}
+
+// The turn is answered: add it to its conversation and show it there.
+function onResult(live, data) {
+  live.finished = true;
+  const here = liveHere();
+  const path = conversationPath(data.conversation_id);
+  const turn = {
+    id: data.run_id, query: live.query, action: data.action, answer: data.answer, evidence: data.evidence,
+    paper_count: data.evidence.papers.length, duration_s: (Date.now() - live.started) / 1000, created_at: nowStamp(),
+  };
+  let conversation = state.cache.get(path);
+  if (conversation) conversation.turns.push(turn);
+  else if (live.isNew) {
+    conversation = { id: data.conversation_id, title: live.query, created_at: nowStamp(), turns: [turn] };
+    state.cache.set(path, conversation);
+  }
+  state.live = null;
+  // Show the new turn's papers, if it found any; otherwise keep what was shown.
+  if (here && conversation && turn.paper_count) state.evidenceKey = String(conversation.turns.length - 1);
+  else if (state.evidenceKey === "live") state.evidenceKey = null;
+  loadConversations();
+  if (!here) return toast("Your answer is ready. Its conversation is at the top of your history.");
+  go(path, { replace: true });
+  if (conversation && conversation.turns.length > 1) {
+    document.getElementById(`turn-${conversation.turns.length - 1}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 // ── Routing ────────────────────────────────────────────────────────────────
 
 function route() {
   document.body.classList.remove("nav-open");
-  const [, userId, runId] = location.pathname.match(RUN_PATH) ?? [];
-  if (runId) openRun(userId, runId);
-  else if (onLive() && state.live) renderLive();
+  const [, userId, conversationId] = location.pathname.match(PAGE_PATH) ?? [];
+  if (conversationId) openConversation(userId, conversationId);
+  else if (onLive() && state.live?.isNew) renderNewLive();
   else renderHome();
   renderHistory();
 }
 
-// The server decides who may see a run: another account's user id is a 403,
-// and a run id that isn't in this account is a 404.
-async function openRun(userId, runId) {
+// The server decides who may see a conversation: another account's user id is
+// a 403, and a conversation id that isn't in this account is a 404.
+async function openConversation(userId, conversationId) {
   const path = location.pathname;
-  let run = state.cache.get(path);
-  if (!run) {
+  let conversation = state.cache.get(path);
+  if (!conversation) {
     view.innerHTML = `<div class="run"><div class="skeleton" style="width:30%"></div><div class="skeleton" style="width:70%;height:30px"></div>
       <div class="panel">${"<div class=skeleton></div>".repeat(6)}</div></div>`;
     try {
-      run = await api(`/api/users/${userId}/runs/${runId}`);
+      conversation = await api(`/api/users/${userId}/conversations/${conversationId}`);
     } catch (error) {
-      if (location.pathname === path) view.innerHTML = errorPanel("Couldn't open this question", error.message);
+      if (location.pathname === path) view.innerHTML = errorPanel("Couldn't open this conversation", error.message);
       return;
     }
-    state.cache.set(path, run);
+    state.cache.set(path, conversation);
   }
-  if (location.pathname === path) renderRun(run); // unless the reader moved on while it loaded
+  if (location.pathname === path) renderConversation(conversation); // unless the reader moved on while it loaded
 }
 
 // ── Views ──────────────────────────────────────────────────────────────────
 
-function renderHome() {
-  state.shown = null;
-  view.innerHTML = `
-    <section class="home">
-      <h1>Ask the literature.</h1>
-      <p class="lede">Librarian searches Europe PMC, reads open-access full text, and answers with citations to the exact sentences it relied on.</p>
-      <form class="composer" id="composer">
-        <textarea name="query" rows="3" maxlength="2000" placeholder="Ask a biomedical research question…" aria-label="Your question"></textarea>
-        <div class="composer-bar">
-          <button class="btn primary" type="submit">Ask ${icon("arrowUp")}</button>
-        </div>
-      </form>
-      <div class="examples">${EXAMPLES.map((q) => `<button class="chip" type="button">${esc(q)}</button>`).join("")}</div>
-      <div class="how">
-        <div><span class="num">1</span><b>Plan</b><p>Your question becomes several complementary Europe PMC searches.</p></div>
-        <div><span class="num">2</span><b>Read</b><p>Hundreds of papers are split into paragraphs and ranked against each search.</p></div>
-        <div><span class="num">3</span><b>Judge &amp; cite</b><p>A relevance judge keeps only the sentences that answer, and the answer cites them.</p></div>
+function composerHtml({ followUp }) {
+  return `<form class="composer${followUp ? " follow" : ""}" id="composer">
+      <textarea name="query" rows="${followUp ? 2 : 3}" maxlength="2000" aria-label="Your question"
+        placeholder="${followUp ? "Ask a follow-up…" : "Ask a biomedical research question…"}"></textarea>
+      <div class="composer-bar">
+        ${followUp ? '<span class="composer-hint">Follow-ups see the conversation so far.</span>' : ""}
+        <button class="btn primary" type="submit">Ask ${icon("arrowUp")}</button>
       </div>
-    </section>`;
+    </form>`;
+}
+
+// Enter sends, Shift+Enter is a new line; a chip fills the box.
+function wireComposer(onSubmit, { draftKey = null, focus = true } = {}) {
   const form = $("#composer");
   const box = form.elements.query;
-  box.focus();
+  if (draftKey) {
+    box.value = state.drafts.get(draftKey) ?? "";
+    box.addEventListener("input", () => state.drafts.set(draftKey, box.value));
+  }
+  if (focus) box.focus({ preventScroll: true });
   box.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -267,92 +325,176 @@ function renderHome() {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const query = box.value.trim();
-    if (query) ask(query);
+    if (query) onSubmit(query);
   });
   view.querySelectorAll(".chip").forEach((chip) =>
     chip.addEventListener("click", () => {
       box.value = chip.textContent;
+      if (draftKey) state.drafts.set(draftKey, box.value);
       box.focus();
     }),
   );
 }
 
-function renderLive() {
+function renderHome() {
+  state.shown = null;
+  view.innerHTML = `
+    <section class="home">
+      <h1>Ask the Librarian.</h1>
+      <p class="lede">Librarian searches Europe PMC, reads open-access full text, and answers with citations to the exact sentences it relied on.</p>
+      ${composerHtml({ followUp: false })}
+      <div class="examples">${EXAMPLES.map((q) => `<button class="chip" type="button">${esc(q)}</button>`).join("")}</div>
+      <div class="how">
+        <div><span class="num">1</span><b>Plan</b><p>Your question becomes several complementary Europe PMC searches.</p></div>
+        <div><span class="num">2</span><b>Read</b><p>Hundreds of papers are split into paragraphs and ranked against each search.</p></div>
+        <div><span class="num">3</span><b>Judge &amp; cite</b><p>A relevance judge keeps only the sentences that answer, and the answer cites them.</p></div>
+        <div><span class="num">4</span><b>Follow up</b><p>Ask about an answer, or narrow, widen and redo the search, in the same conversation.</p></div>
+      </div>
+    </section>`;
+  wireComposer((query) => ask(query));
+}
+
+// The first turn of a new conversation, while it runs.
+function renderNewLive() {
   const live = state.live;
   state.shown = null;
-  state.papers = live.evidence?.papers ?? [];
-  state.cited = new Set();
-  const answer = live.error
-    ? errorPanel("The run failed", live.error, `<button class="btn" data-action="retry">Try again</button>`)
-    : `<div class="panel"><div class="label">Answer</div>${"<div class=skeleton></div>".repeat(5)}<div class="skeleton" style="width:60%"></div>
-        <p class="note">${live.evidence ? "Evidence is in. Writing the answer…" : "Reading open-access full text takes a few minutes. You can leave this page: the answer is saved to your history."}</p></div>`;
-  const evidence = live.evidence
-    ? evidenceColumn(state.papers)
-    : live.error
-    ? ""
-    : `<aside class="evidence-col"><div class="evidence-head"><span class="label">Evidence</span></div>
-        <div class="papers">${`<div class="paper">${"<div class=skeleton></div>".repeat(3)}</div>`.repeat(3)}</div></aside>`;
+  state.citedRefs = new Set();
   view.innerHTML = `
     <article class="run">
       <div class="eyebrow">${live.error ? "Failed" : "Answering now"}</div>
       <h1 class="question">${esc(live.query)}</h1>
-      ${live.error ? "" : stepsHtml(live)}
-      <div class="run-grid"><section>${live.queries ? searchesHtml(live.queries, true) : ""}${answer}</section>${evidence}</div>
+      <div class="run-grid">
+        <section class="thread"><div class="turn" id="live-turn">${liveTurnHtml(live)}</div></section>
+        <aside class="evidence-col" id="evidence"></aside>
+      </div>
     </article>`;
+  state.evidenceKey = "live";
+  renderEvidence();
 }
 
-function stepsHtml(live) {
-  const steps = STAGES.map(([title, detail], i) => {
-    const status = i < live.stage ? "done" : i === live.stage ? "active" : "";
-    return `<li class="step ${status}"><span class="dot">${status === "done" ? icon("check") : ""}</span>
-      <div><b>${title}</b><small>${esc(i === live.stage ? live.message : detail)}</small></div></li>`;
-  });
-  return `<ol class="steps">${steps.join("")}<li class="elapsed" id="elapsed">${clock(Date.now() - live.started)}</li></ol>`;
-}
-
-function renderRun(run) {
-  state.shown = run;
-  state.papers = run.evidence.papers;
-  const answer = document.createElement("div");
-  state.cited = renderAnswer(answer, run.answer, state.papers);
+// A conversation: its title, then each turn, the one being answered, and the
+// follow-up box. The evidence column shows one turn's papers at a time.
+function renderConversation(conversation) {
+  if (state.shown?.id !== conversation.id) state.evidenceKey = null; // a new conversation starts on its latest papers
+  state.shown = conversation;
+  state.citedRefs = new Set();
+  const turns = conversation.turns.map((turn, i) => turnHtml(conversation.turns, i));
+  const live = liveHere() ? state.live : null;
   view.innerHTML = `
     <article class="run">
-      <h1 class="question">${esc(run.query)}</h1>
+      <h1 class="question">${esc(conversation.title)}</h1>
       <div class="run-bar">
+        <span class="run-meta">${plural(conversation.turns.length, "question")} · started ${esc(conversation.created_at.slice(0, 10))}</span>
         <div class="actions">
-          <button class="btn" data-action="copy">${icon("copy")} Copy answer</button>
-          <button class="btn" data-action="markdown" title="Download the answer and evidence as Markdown">${icon("download")} Markdown</button>
+          <button class="btn" data-action="markdown" title="Download the conversation and its evidence as Markdown">${icon("download")} Markdown</button>
           <button class="btn" data-action="json" title="Download the raw API payload">${icon("braces")} JSON</button>
-          <button class="btn icon danger" data-action="delete" title="Delete from history" aria-label="Delete from history">${icon("trash")}</button>
+          <button class="btn icon danger" data-action="delete" title="Delete this conversation" aria-label="Delete this conversation">${icon("trash")}</button>
         </div>
       </div>
       <div class="run-grid">
-        <section>
-          ${searchesHtml(run.evidence.search_queries)}
-          <div class="panel"><div class="label">Answer</div><div class="prose">${answer.innerHTML}</div></div>
+        <section class="thread">
+          ${turns.join("")}
+          ${live ? `<div class="turn" id="live-turn">${liveTurnHtml(live)}</div>` : ""}
+          ${composerHtml({ followUp: true })}
+          <div class="examples follow-ups">${FOLLOW_UPS.map((q) => `<button class="chip" type="button">${esc(q)}</button>`).join("")}</div>
         </section>
-        ${evidenceColumn(state.papers)}
+        <aside class="evidence-col" id="evidence"></aside>
       </div>
     </article>`;
+  wireComposer((query) => ask(query, conversation.id), { draftKey: conversation.id, focus: false });
+  renderEvidence();
 }
 
-// Render the Markdown answer into `el` and turn every link that points at a
-// retrieved paper into a citation chip. Returns the indexes of cited papers.
-function renderAnswer(el, markdown, papers) {
+// One answered turn. The first one's question is the page's title; a
+// follow-up's sits above its answer.
+function turnHtml(turns, i) {
+  const turn = turns[i];
+  const answer = document.createElement("div");
+  renderAnswer(answer, turn.answer, turns, i);
+  const papers = turn.evidence?.papers ?? [];
+  const searched = turn.evidence?.query;
+  const meta =
+    turn.action === "reply"
+      ? `<div class="turn-meta"><span>${icon("message")} Answered from the conversation, without a new search</span></div>`
+      : `<div class="turn-meta">
+          ${i > 0 && searched && searched !== turn.query ? `<span>${icon("search")} Searched for “${esc(searched)}”</span>` : ""}
+          ${papers.length ? `<button class="pill" type="button" data-evidence="${i}" title="Show this answer's evidence">${icon("file")} ${plural(papers.length, "paper")}</button>` : `<span>No paper passed the relevance judge</span>`}
+        </div>
+        ${searchesHtml(turn.evidence?.search_queries ?? [])}`;
+  return `<div class="turn" id="turn-${i}">
+      ${i > 0 ? askHtml(turn.query) : ""}
+      ${meta}
+      <div class="panel">
+        <div class="panel-head"><span class="label">Answer</span>
+          <button class="btn icon ghost sm" data-action="copy" data-turn="${i}" title="Copy this answer as Markdown" aria-label="Copy this answer">${icon("copy")}</button></div>
+        <div class="prose">${answer.innerHTML}</div>
+      </div>
+    </div>`;
+}
+
+const askHtml = (query) => `<div class="ask"><span class="label">${icon("followUp")} Follow-up</span><p>${esc(query)}</p></div>`;
+
+// The turn being answered: its progress, then a placeholder for the answer.
+function liveTurnHtml(live) {
+  const question = live.isNew ? "" : askHtml(live.query);
+  if (live.error) {
+    return question + errorPanel("The run failed", live.error, `<button class="btn" data-action="retry">Try again</button>`);
+  }
+  const route = live.route;
+  const rewritten =
+    route?.action === "search" && route.query !== live.query
+      ? `<div class="turn-meta"><span>${icon("search")} Searching for “${esc(route.query)}”</span></div>`
+      : "";
+  const note =
+    route?.action === "reply"
+      ? "Answering from the conversation…"
+      : live.evidence
+      ? "Evidence is in. Writing the answer…"
+      : `Reading open-access full text takes a few minutes. You can leave this page: the answer is saved to ${live.isNew ? "your history" : "this conversation"}.`;
+  return `${question}${stepsHtml(live)}${rewritten}${live.queries ? searchesHtml(live.queries, true) : ""}
+    <div class="panel"><div class="label">Answer</div>${"<div class=skeleton></div>".repeat(4)}<div class="skeleton" style="width:60%"></div>
+      <p class="note">${note}</p></div>`;
+}
+
+// The stages as a row of titles, then what the current one is doing right now.
+function stepsHtml(live) {
+  const steps = STAGES.map(([title, detail], i) => {
+    const status = i < live.stage ? "done" : i === live.stage ? "active" : "";
+    return `<li class="step ${status}" title="${esc(detail)}"><span class="dot">${status === "done" ? icon("check") : ""}</span><b>${title}</b></li>`;
+  });
+  return `<ol class="steps">${steps.join("")}
+    <li class="now"><span>${esc(live.message)}</span><span class="elapsed" id="elapsed">${clock(Date.now() - live.started)}</span></li></ol>`;
+}
+
+// Where a link in turn `t`'s answer points: the paper with that URL in the
+// turn's own evidence, else in the latest earlier turn that found it. A reply,
+// or a follow-up building on an earlier answer, cites papers found before.
+function paperRef(turns, t, url) {
+  for (let i = t; i >= 0; i--) {
+    const j = (turns[i].evidence?.papers ?? []).findIndex((paper) => paper.url === url);
+    if (j !== -1) return `${i}:${j}`;
+  }
+  return null;
+}
+
+// Render the Markdown answer of turn `t` into `el` and turn every link that
+// points at a retrieved paper into a citation chip, noting it in state.citedRefs.
+function renderAnswer(el, markdown, turns, t) {
   el.innerHTML = DOMPurify.sanitize(marked.parse(markdown));
-  const byUrl = new Map(papers.map((paper, i) => [paper.url, i]).filter(([url]) => url));
-  const cited = new Set();
   for (const link of el.querySelectorAll("a[href]")) {
     link.target = "_blank";
     link.rel = "noopener";
-    const i = byUrl.get(link.getAttribute("href"));
-    if (i === undefined) continue;
-    cited.add(i);
+    const ref = paperRef(turns, t, link.getAttribute("href"));
+    if (!ref) continue;
+    const [i, j] = ref.split(":");
+    const paper = turns[i].evidence.papers[j];
+    state.citedRefs.add(ref);
     link.className = "cite";
-    link.dataset.idx = i;
-    link.title = plain(papers[i].title);
+    link.dataset.ref = ref;
+    link.title = plain(paper.title);
+    // A reply sometimes writes the bare URL as the link text: name the paper instead.
+    if (link.textContent.trim() === link.getAttribute("href") && paper.citation_key) link.textContent = paper.citation_key;
   }
-  return cited;
 }
 
 // The Europe PMC sub-queries, framed above the answer: open while the run
@@ -366,16 +508,64 @@ function searchesHtml(queries, open = false) {
   return `<details class="searches"${open ? " open" : ""}><summary>Europe PMC searches · ${count}</summary><ol>${items.join("")}</ol></details>`;
 }
 
-function evidenceColumn(papers) {
-  return `<aside class="evidence-col">
+// Every set of papers the evidence column can show: each searched turn's, then
+// the running turn's once they are in.
+function evidenceSources() {
+  const sources = [];
+  (state.shown?.turns ?? []).forEach((turn, i) => {
+    const papers = turn.evidence?.papers ?? [];
+    if (papers.length) sources.push({ key: String(i), label: `${i + 1}. ${clip(turn.query, 44)}`, papers });
+  });
+  const live = liveHere() ? state.live : null;
+  if (live?.evidence) sources.push({ key: "live", label: `Now: ${clip(live.query, 44)}`, papers: live.evidence.papers });
+  return sources;
+}
+
+function renderEvidence() {
+  const el = $("#evidence");
+  if (!el) return;
+  const sources = evidenceSources();
+  const current = sources.find((source) => source.key === state.evidenceKey) ?? sources.at(-1);
+  state.evidenceKey = current?.key ?? null;
+  state.papers = current?.papers ?? [];
+  state.cited = new Set(state.papers.map((_, i) => i).filter((i) => state.citedRefs.has(`${current.key}:${i}`)));
+  view.querySelectorAll("[data-evidence]").forEach((pill) => pill.classList.toggle("active", pill.dataset.evidence === state.evidenceKey));
+  if (!current) {
+    el.innerHTML = noEvidenceHtml();
+    return;
+  }
+  const picker =
+    sources.length > 1
+      ? `<select id="evidence-turn" aria-label="Show the evidence of">${sources
+          .map((source) => `<option value="${source.key}"${source === current ? " selected" : ""}>${esc(source.label)}</option>`)
+          .join("")}</select>`
+      : "";
+  el.innerHTML = `
     <div class="evidence-head">
-      <span class="label">Evidence<span>${papers.length} ${papers.length === 1 ? "paper" : "papers"}</span></span>
-      <select id="sort" aria-label="Sort papers">
-        <option value="rank">By relevance</option><option value="cited">Cited first</option><option value="year">Newest first</option>
-      </select>
+      <span class="label">Evidence<span>${plural(state.papers.length, "paper")}</span></span>
+      <div class="evidence-tools">${picker}
+        <select id="sort" aria-label="Sort papers">
+          <option value="rank">By relevance</option><option value="cited">Cited first</option><option value="year">Newest first</option>
+        </select>
+      </div>
     </div>
-    <div class="papers" id="papers">${paperCards("rank")}</div>
-  </aside>`;
+    <div class="papers" id="papers">${paperCards("rank")}</div>`;
+}
+
+// Nothing to show yet: the running turn is still searching, or no turn searched.
+function noEvidenceHtml() {
+  const live = liveHere() ? state.live : null;
+  if (live && !live.error && live.route?.action !== "reply") {
+    return `<div class="evidence-head"><span class="label">Evidence</span></div>
+      <div class="papers">${`<div class="paper">${"<div class=skeleton></div>".repeat(3)}</div>`.repeat(3)}</div>`;
+  }
+  if (!state.shown) return "";
+  const searched = state.shown.turns.some((turn) => turn.action !== "reply");
+  const why = searched
+    ? "No paper passed the relevance judge in this conversation. Try rephrasing or broadening the question."
+    : "These answers came from the conversation itself, without a literature search. Ask for papers to search Europe PMC.";
+  return `<div class="evidence-head"><span class="label">Evidence</span></div>
+    <p class="evidence-empty">${icon(searched ? "search" : "message")} ${why}</p>`;
 }
 
 function paperCards(sort) {
@@ -398,9 +588,10 @@ function paperCard(paper, i, isCited) {
   const snippets = paper.evidence_snippets.map(
     (text) => `<li${text.length > 480 ? ' class="long" title="Click to expand"' : ""}>${esc(plain(text))}</li>`,
   );
-  return `<article class="paper${isCited ? " cited" : ""}" id="paper-${i}" data-idx="${i}">
+  const ref = `${state.evidenceKey}:${i}`;
+  return `<article class="paper${isCited ? " cited" : ""}" id="paper-${state.evidenceKey}-${i}" data-ref="${ref}">
     <div class="paper-top">
-      <span class="key" title="${isCited ? "Cited in the answer" : "Retrieved, not cited in the answer"}">${esc(paper.citation_key || `#${i + 1}`)}</span>
+      <span class="key" title="${isCited ? "Cited in an answer" : "Retrieved, not cited in an answer"}">${esc(paper.citation_key || `#${i + 1}`)}</span>
       ${paper.has_fulltext ? '<span class="badge" title="Free full text is available in Europe PMC">Free full text</span>' : ""}
       ${paper.epmcSource === "PPR" ? '<span class="badge warn">Preprint</span>' : ""}
       <span class="rank" title="Relevance rank">#${i + 1}</span>
@@ -421,34 +612,42 @@ function renderHistory() {
   const filter = $("#history-filter").value.trim().toLowerCase();
   const today = new Date().setHours(0, 0, 0, 0);
   const groups = new Map();
-  for (const run of state.runs.filter((r) => r.query.toLowerCase().includes(filter))) {
-    const days = Math.round((today - new Date(parseTime(run.created_at)).setHours(0, 0, 0, 0)) / 864e5);
+  for (const conversation of state.conversations.filter((c) => c.title.toLowerCase().includes(filter))) {
+    const days = Math.round((today - new Date(parseTime(conversation.last_turn_at)).setHours(0, 0, 0, 0)) / 864e5);
     const label = days < 1 ? "Today" : days < 2 ? "Yesterday" : days < 7 ? "Previous 7 days" : days < 30 ? "Previous 30 days" : "Older";
     if (!groups.has(label)) groups.set(label, []);
-    groups.get(label).push(run);
+    groups.get(label).push(conversation);
   }
   const live = state.live;
   const liveItem = live
-    ? `<div class="group">In progress</div><a class="hist live${onLive() ? " active" : ""}" href="/" data-live>
+    ? `<div class="group">In progress</div><a class="hist live${liveHere() ? " active" : ""}"
+          href="${live.isNew ? "/" : conversationPath(live.conversationId)}"${live.isNew ? " data-live" : ""}>
         <span>${esc(live.query)}</span><small>${live.error ? "Failed" : `<i class="pulse"></i>${STAGES[live.stage][0]}…`}</small></a>`
     : "";
   const items = [...groups].map(
-    ([label, runs]) =>
+    ([label, conversations]) =>
       `<div class="group">${label}</div>` +
-      runs
-        .map(
-          (run) => `<a class="hist${location.pathname === runPath(run.id) ? " active" : ""}" href="${runPath(run.id)}">
-            <span>${esc(run.query)}</span><small>${run.paper_count} ${run.paper_count === 1 ? "paper" : "papers"}</small></a>`,
-        )
+      conversations
+        .map((conversation) => {
+          const counts = conversation.turn_count > 1 ? `${plural(conversation.turn_count, "question")} · ` : "";
+          return `<a class="hist${location.pathname === conversationPath(conversation.id) ? " active" : ""}" href="${conversationPath(conversation.id)}">
+            <span>${esc(conversation.title)}</span><small>${counts}${plural(conversation.paper_count, "paper")}</small></a>`;
+        })
         .join(""),
   );
   $("#history").innerHTML =
     liveItem + items.join("") ||
-    `<p class="empty">${filter ? "No questions match." : "Your questions and answers will be kept here."}</p>`;
+    `<p class="empty">${filter ? "No conversations match." : "Your conversations will be kept here."}</p>`;
 }
 
-function focusPaper(i) {
-  const card = document.getElementById(`paper-${i}`);
+// Jump to a cited paper, switching the evidence column to the turn that found it.
+function focusPaper(ref) {
+  const [key, i] = ref.split(":");
+  if (key !== state.evidenceKey) {
+    state.evidenceKey = key;
+    renderEvidence();
+  }
+  const card = document.getElementById(`paper-${key}-${i}`);
   if (!card) return;
   card.scrollIntoView({ behavior: "smooth", block: "center" });
   card.classList.remove("flash");
@@ -456,37 +655,42 @@ function focusPaper(i) {
   card.classList.add("flash");
 }
 
-function toMarkdown(run) {
-  const lines = [`# ${run.query}`, "", run.answer, "", "## Evidence", ""];
-  for (const paper of run.evidence.papers) {
-    const ids = [paper.pmid && `PMID ${paper.pmid}`, paper.doi && `doi:${paper.doi}`].filter(Boolean);
-    lines.push(`### [${paper.citation_key}] ${plain(paper.title)}`, "");
-    lines.push([paper.authors, [paper.journal, paper.year].filter(Boolean).join(" "), ...ids].filter(Boolean).join(" · "));
-    if (paper.url) lines.push(paper.url);
-    lines.push("", ...paper.evidence_snippets.flatMap((text) => [`> ${plain(text)}`, ""]));
+function toMarkdown(conversation) {
+  // One question reads like a report; several get a section each.
+  const single = conversation.turns.length === 1;
+  const h = (level) => "#".repeat(single ? level : level + 1);
+  const lines = [`# ${conversation.title}`, ""];
+  for (const turn of conversation.turns) {
+    if (!single) lines.push(`## ${turn.query}`, "");
+    lines.push(turn.answer, "");
+    const papers = turn.evidence?.papers ?? [];
+    if (!papers.length) continue;
+    lines.push(`${h(2)} Evidence`, "");
+    for (const paper of papers) {
+      const ids = [paper.pmid && `PMID ${paper.pmid}`, paper.doi && `doi:${paper.doi}`].filter(Boolean);
+      lines.push(`${h(3)} [${paper.citation_key}] ${plain(paper.title)}`, "");
+      lines.push([paper.authors, [paper.journal, paper.year].filter(Boolean).join(" "), ...ids].filter(Boolean).join(" · "));
+      if (paper.url) lines.push(paper.url);
+      lines.push("", ...paper.evidence_snippets.flatMap((text) => [`> ${plain(text)}`, ""]));
+    }
   }
   return lines.join("\n");
 }
 
 const ACTIONS = {
-  retry: () => ask(state.live.query),
-  copy: async () => {
-    await navigator.clipboard.writeText(state.shown.answer);
+  retry: () => ask(state.live.query, state.live.conversationId, { isNew: state.live.isNew }),
+  copy: async (button) => {
+    await navigator.clipboard.writeText(state.shown.turns[button.dataset.turn].answer);
     toast("Answer copied as Markdown");
   },
-  markdown: () => download(`${slug(state.shown.query)}.md`, toMarkdown(state.shown), "text/markdown"),
-  json: () =>
-    download(
-      `${slug(state.shown.query)}.json`,
-      JSON.stringify({ answer: state.shown.answer, evidence: state.shown.evidence }, null, 2),
-      "application/json",
-    ),
+  markdown: () => download(`${slug(state.shown.title)}.md`, toMarkdown(state.shown), "text/markdown"),
+  json: () => download(`${slug(state.shown.title)}.json`, JSON.stringify(state.shown, null, 2), "application/json"),
   delete: async () => {
-    if (!confirm("Delete this question and its answer from your history?")) return;
-    await api(`/api/users/${state.me.id}/runs/${state.shown.id}`, { method: "DELETE" });
-    state.cache.delete(runPath(state.shown.id));
-    await loadHistory();
-    go("/", { replace: true }); // the run's URL is gone, so Back shouldn't return to it
+    if (!confirm("Delete this conversation, with all its questions and answers, from your history?")) return;
+    await api(`/api/users/${state.me.id}/conversations/${state.shown.id}`, { method: "DELETE" });
+    state.cache.delete(conversationPath(state.shown.id));
+    await loadConversations();
+    go("/", { replace: true }); // the conversation's URL is gone, so Back shouldn't return to it
     toast("Deleted from your history");
   },
 };
@@ -514,7 +718,7 @@ async function boot() {
 
   $("#new-question").addEventListener("click", () => go("/"));
   // Links to this app's own pages navigate in place. Modified clicks are left
-  // to the browser, so cmd/ctrl-click still opens a run in a new tab.
+  // to the browser, so cmd/ctrl-click still opens a conversation in a new tab.
   document.addEventListener("click", (event) => {
     const link = event.target.closest('a[href^="/"]:not([target])');
     if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -542,24 +746,34 @@ async function boot() {
     const cite = event.target.closest("a.cite");
     if (cite && !event.metaKey && !event.ctrlKey) {
       event.preventDefault(); // a plain click jumps to the evidence; cmd/ctrl-click opens the paper
-      return focusPaper(cite.dataset.idx);
+      return focusPaper(cite.dataset.ref);
+    }
+    const pill = event.target.closest("[data-evidence]");
+    if (pill) {
+      state.evidenceKey = pill.dataset.evidence;
+      renderEvidence();
+      return $("#evidence").scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
     const snippet = event.target.closest(".snippets li.long");
     if (snippet) return snippet.classList.toggle("open");
-    const action = event.target.closest("[data-action]")?.dataset.action;
-    if (action) Promise.resolve(ACTIONS[action]()).catch((error) => toast(error.message));
+    const button = event.target.closest("[data-action]");
+    if (button) Promise.resolve(ACTIONS[button.dataset.action](button)).catch((error) => toast(error.message));
   });
   view.addEventListener("change", (event) => {
     if (event.target.id === "sort") $("#papers").innerHTML = paperCards(event.target.value);
+    if (event.target.id === "evidence-turn") {
+      state.evidenceKey = event.target.value;
+      renderEvidence();
+    }
   });
-  // Hovering a paper lights up every place the answer cites it. Listening on
+  // Hovering a paper lights up every place an answer cites it. Listening on
   // the document means leaving the view also turns the highlight off.
   let lit = null;
   document.addEventListener("mouseover", (event) => {
-    const idx = event.target.closest(".paper")?.dataset.idx ?? null;
-    if (idx === lit) return;
-    lit = idx;
-    view.querySelectorAll("a.cite").forEach((cite) => cite.classList.toggle("lit", cite.dataset.idx === idx));
+    const ref = event.target.closest(".paper")?.dataset.ref ?? null;
+    if (ref === lit) return;
+    lit = ref;
+    view.querySelectorAll("a.cite").forEach((cite) => cite.classList.toggle("lit", cite.dataset.ref === ref));
   });
   setInterval(() => {
     const el = $("#elapsed");
@@ -568,7 +782,7 @@ async function boot() {
 
   window.addEventListener("popstate", route);
   route();
-  loadHistory().catch((error) => toast(error.message));
+  loadConversations().catch((error) => toast(error.message));
 }
 
 boot();

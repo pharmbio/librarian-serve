@@ -5,22 +5,28 @@
     POST   /api/auth/login       sign in (sets the session cookie)
     POST   /api/auth/logout      sign out
     GET    /api/me               the signed-in user
-    POST   /run-agent            blocking JSON run: {answer, evidence, run_id}
+    POST   /run-agent            blocking JSON run of one turn: {action, answer, evidence, run_id, conversation_id, ...}
     POST   /run-agent/stream     the same run as Server-Sent Events (live progress)
-    GET    /api/users/{user_id}/runs           the user's past runs, newest first
-    GET    /api/users/{user_id}/runs/{run_id}  one past run in full
-    DELETE /api/users/{user_id}/runs/{run_id}  delete one past run
-    GET    /{user_id}/{run_id}   the web UI, opened on that run
+    GET    /api/users/{user_id}/conversations                    the user's conversations, latest turn first
+    GET    /api/users/{user_id}/conversations/{conversation_id}  one conversation, every turn in full
+    DELETE /api/users/{user_id}/conversations/{conversation_id}  delete one conversation
+    GET    /{user_id}/{conversation_id}   the web UI, opened on that conversation
     GET    /                     the web UI (static/)
 
 Everything except /health, the auth routes and the UI needs a signed-in session.
-Users and runs are addressed by random public ids. A {user_id} in an API path
-must be the signed-in user's own (anyone else's is a 403), and a run that isn't
-theirs is a 404.
+Users and conversations are addressed by random public ids. A {user_id} in an
+API path must be the signed-in user's own (anyone else's is a 403), and a
+conversation that isn't theirs is a 404.
+
+A run answers one turn of a conversation: a question without a conversation_id
+starts one, and a question with one follows up on it. The librarian gets the
+latest turns along with the question, so it can resolve a follow-up ("and in
+rats?") or answer it from the conversation without searching again.
 
 Questions go to the librarian service at LIBRARIAN_URL (librarian_client.py);
-users, sessions, queries and runs live in the Supabase container's database,
-reached through its REST API at SUPABASE_URL (db_client.py). The app starts
+users, sessions, conversations, queries and runs live in the Supabase
+container's database, reached through its REST API at SUPABASE_URL
+(db_client.py). The app starts
 whether or not they are up, and a request that needs one that is down fails
 with a message saying so.
 """
@@ -72,6 +78,9 @@ EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 PUBLIC_ID_PATTERN = re.compile(r"[0-9a-f]{16}")
 # Every run reads open-access full text, as the librarian does by default.
 FULL_TEXT_ENRICHMENT = True
+# How many earlier turns the librarian gets with a question. It reads the
+# latest six messages, a question and its answer each, so more would go unread.
+HISTORY_TURNS = 3
 # A stream with nothing to report for this long gets a keep-alive comment, so
 # proxies between here and the browser don't close it as idle.
 HEARTBEAT_S = 15.0
@@ -239,38 +248,88 @@ class RunRequest(BaseModel):
     query: str = Field(
         ..., min_length=1, max_length=2000, description="Natural-language question."
     )
+    conversation_id: Optional[str] = Field(
+        default=None,
+        description="The conversation this question follows up on; none starts a new one.",
+    )
 
 
-def _run_for_user(user_id: str, request: RunRequest, **callbacks: Any) -> Dict[str, Any]:
-    """Ask the librarian, recording the question and its run in the database.
+def _own_conversation(conversation_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
+    """The user's conversation ``conversation_id``, else 404. Another account's
+    conversation is a 404 like one that doesn't exist."""
+    conversation = PUBLIC_ID_PATTERN.fullmatch(conversation_id) and db.get_conversation(conversation_id)
+    if not conversation or conversation["user_id"] != user["id"]:
+        raise HTTPException(404, "No such conversation.")
+    return conversation
 
-    The query and its run are stored before the librarian is asked, so with
-    the database down the request fails before any LLM work. The run then
-    ends ``completed`` with the answer, or ``failed`` with the reason.
 
-    :param callbacks: ``on_progress`` / ``on_queries`` / ``on_evidence``, see
-        ``LibrarianClient.run``.
-    :returns: The librarian's ``{answer, evidence}`` plus the ``run_id`` it
-        was saved under.
+def _requested_conversation(request: RunRequest, user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The conversation a run follows up on, checked before the run starts:
+    None for a new one."""
+    return _own_conversation(request.conversation_id, user) if request.conversation_id else None
+
+
+def _history(conversation_id: str) -> List[Dict[str, str]]:
+    """The conversation so far as the librarian reads it: the question and the
+    answer of each of its latest answered turns, oldest first."""
+    messages: List[Dict[str, str]] = []
+    for turn in db.list_turns(conversation_id, with_evidence=False)[-HISTORY_TURNS:]:
+        messages.append({"role": "user", "content": turn["query_text"]})
+        messages.append({"role": "assistant", "content": turn["answer"]})
+    return messages
+
+
+def _run_for_user(
+    user_id: str,
+    request: RunRequest,
+    conversation: Optional[Dict[str, Any]] = None,
+    on_start: Optional[Callable[[Dict[str, str]], None]] = None,
+    **callbacks: Any,
+) -> Dict[str, Any]:
+    """Ask the librarian one turn of a conversation, recording it in the database.
+
+    The conversation (when new), the query and its run are stored before the
+    librarian is asked, so with the database down the request fails before
+    any LLM work. The run then ends ``completed`` with the answer, or
+    ``failed`` with the reason.
+
+    :param conversation: The user's conversation to continue, as
+        ``_own_conversation`` returns it, or None to start one.
+    :param on_start: Called with ``{conversation_id, run_id}`` once both are
+        stored, so a client can retry a failed turn in the same conversation.
+    :param callbacks: ``on_progress`` / ``on_route`` / ``on_queries`` /
+        ``on_evidence``, see ``LibrarianClient.run``.
+    :returns: The librarian's ``{action, answer, query, language, evidence}``
+        plus the ``run_id`` and ``conversation_id`` it was saved under.
     """
-    query = db.create_query(user_id, request.query, FULL_TEXT_ENRICHMENT)
+    if conversation is None:
+        conversation = db.create_conversation(user_id, request.query)
+        history: List[Dict[str, str]] = []
+    else:
+        history = _history(conversation["id"])
+    query = db.create_query(user_id, request.query, FULL_TEXT_ENRICHMENT, conversation["id"])
     run_id = db.create_run(query["id"])["id"]
+    if on_start:
+        on_start({"conversation_id": conversation["id"], "run_id": run_id})
     db.update_run(run_id, status="running")
     started = time.monotonic()
     try:
-        result = librarian.run(request.query, FULL_TEXT_ENRICHMENT, **callbacks)
+        result = librarian.run(
+            request.query, FULL_TEXT_ENRICHMENT, conversation_history=history, **callbacks
+        )
     except Exception as exc:
         _record_failure(run_id, exc, started)
         raise
     db.update_run(
         run_id,
         status="completed",
+        action=result["action"],
         answer=result["answer"],
         evidence=result["evidence"],
         paper_count=len(result["evidence"]["papers"]),
         duration_s=round(time.monotonic() - started, 1),
     )
-    return {**result, "run_id": run_id}
+    return {**result, "run_id": run_id, "conversation_id": conversation["id"]}
 
 
 def _record_failure(run_id: str, exc: Exception, started: float) -> None:
@@ -301,10 +360,12 @@ def _stream(
 
     The run is blocking and reports progress through callbacks, so the thread
     pushes the callbacks' payloads and the final result onto a queue that the
-    returned generator drains in order. Events: ``progress`` (repeated),
-    ``queries`` (once Stage 2 starts searching), ``evidence`` (once retrieval
-    ends), then exactly one of ``result`` / ``error``, then ``done``. A quiet
-    stream gets a ``: keepalive`` comment every ``heartbeat_s`` seconds.
+    returned generator drains in order. Events: ``started`` (once the turn is
+    stored), ``progress`` (repeated), ``route`` (once the librarian has decided
+    to search or to reply), and on a search ``queries`` (once Stage 2 starts
+    searching) and ``evidence`` (once retrieval ends), then exactly one of
+    ``result`` / ``error``, then ``done``. A quiet stream gets a
+    ``: keepalive`` comment every ``heartbeat_s`` seconds.
 
     :param request: The validated request body.
     :param run: The run to stream; the route passes ``_run_for_user``, and
@@ -316,9 +377,11 @@ def _stream(
         try:
             result = run(
                 request,
+                on_start=lambda ids: events.put(("started", ids)),
                 on_progress=lambda message: events.put(
                     ("progress", {"message": message})
                 ),
+                on_route=lambda decision: events.put(("route", decision)),
                 on_queries=lambda queries: events.put(
                     ("queries", {"search_queries": queries})
                 ),
@@ -361,54 +424,32 @@ def health() -> Dict[str, str]:
 def run_agent(
     request: RunRequest, user: Dict[str, Any] = Depends(current_user)
 ) -> Dict[str, Any]:
-    """Run the librarian and return the answer and its evidence inline."""
-    return _run_for_user(user["id"], request)
+    """Run the librarian on one turn and return the answer and its evidence inline."""
+    conversation = _requested_conversation(request, user)
+    return _run_for_user(user["id"], request, conversation)
 
 
 @app.post("/run-agent/stream")
 def run_agent_stream(
     request: RunRequest, user: Dict[str, Any] = Depends(current_user)
 ) -> StreamingResponse:
-    """Run the librarian, streaming each pipeline stage as it happens."""
+    """Run the librarian on one turn, streaming each pipeline stage as it
+    happens. A conversation that isn't the user's is a 404 before any stream."""
+    conversation = _requested_conversation(request, user)
     return StreamingResponse(
-        _stream(request, run=functools.partial(_run_for_user, user["id"])),
+        _stream(request, run=functools.partial(_run_for_user, user["id"], conversation=conversation)),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-def _own_run(run_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
-    """The user's finished run ``run_id``, else 404. Another account's run is
-    a 404 like one that doesn't exist; so is a run that failed, which the
-    history doesn't show."""
-    run = PUBLIC_ID_PATTERN.fullmatch(run_id) and db.get_run(run_id)
-    if not run or run["user_id"] != user["id"] or run["status"] != "completed":
-        raise HTTPException(404, "No such run.")
-    return run
-
-
-@app.get("/api/users/{user_id}/runs")
-def list_runs(user: Dict[str, Any] = Depends(path_user)) -> List[Dict[str, Any]]:
-    """The user's past runs, newest first, without their answers and evidence."""
-    return [
-        {
-            "id": run["id"],
-            "query": run["query_text"],
-            "paper_count": run["paper_count"],
-            "duration_s": run["duration_s"],
-            "created_at": _stamp(run["created_at"]),
-        }
-        for run in db.list_runs(user_id=user["id"], status="completed")
-    ]
-
-
-@app.get("/api/users/{user_id}/runs/{run_id}")
-def get_run(run_id: str, user: Dict[str, Any] = Depends(path_user)) -> Dict[str, Any]:
-    """One past run in full, in the shape a live run returns."""
-    run = _own_run(run_id, user)
+def _turn_json(run: Dict[str, Any]) -> Dict[str, Any]:
+    """How the API shows one answered turn, in the shape a live run returns."""
     return {
         "id": run["id"],
         "query": run["query_text"],
+        # Runs from before conversations have none, and all searched.
+        "action": run["action"] or "search",
         "answer": run["answer"],
         "evidence": run["evidence"],
         "paper_count": run["paper_count"],
@@ -417,10 +458,48 @@ def get_run(run_id: str, user: Dict[str, Any] = Depends(path_user)) -> Dict[str,
     }
 
 
-@app.delete("/api/users/{user_id}/runs/{run_id}")
-def delete_run(run_id: str, user: Dict[str, Any] = Depends(path_user)) -> Dict[str, bool]:
-    """Delete one of the user's runs, with the question it answered."""
-    db.delete_query(_own_run(run_id, user)["query_id"])
+@app.get("/api/users/{user_id}/conversations")
+def list_conversations(user: Dict[str, Any] = Depends(path_user)) -> List[Dict[str, Any]]:
+    """The user's conversations, the one with the latest turn first, without
+    their turns. One whose every turn failed isn't listed."""
+    return [
+        {
+            "id": conversation["id"],
+            "title": conversation["title"],
+            "turn_count": conversation["turn_count"],
+            "paper_count": conversation["paper_count"],
+            "created_at": _stamp(conversation["created_at"]),
+            "last_turn_at": _stamp(conversation["last_turn_at"]),
+        }
+        for conversation in db.list_conversations(user["id"])
+    ]
+
+
+@app.get("/api/users/{user_id}/conversations/{conversation_id}")
+def get_conversation(
+    conversation_id: str, user: Dict[str, Any] = Depends(path_user)
+) -> Dict[str, Any]:
+    """One conversation with every answered turn in full, oldest first. Failed
+    turns are left out, and a conversation without an answered turn is a 404,
+    as the list doesn't show it."""
+    conversation = _own_conversation(conversation_id, user)
+    turns = db.list_turns(conversation["id"])
+    if not turns:
+        raise HTTPException(404, "No such conversation.")
+    return {
+        "id": conversation["id"],
+        "title": conversation["title"],
+        "created_at": _stamp(conversation["created_at"]),
+        "turns": [_turn_json(turn) for turn in turns],
+    }
+
+
+@app.delete("/api/users/{user_id}/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str, user: Dict[str, Any] = Depends(path_user)
+) -> Dict[str, bool]:
+    """Delete one of the user's conversations, with all its questions and answers."""
+    db.delete_conversation(_own_conversation(conversation_id, user)["id"])
     return {"ok": True}
 
 
@@ -453,13 +532,13 @@ class _PublicIdConvertor(Convertor):
 register_url_convertor("public_id", _PublicIdConvertor())
 
 
-# A run's own URL is the UI's page too: the UI reads both ids from the path and
-# asks /api/users/... for the run, which is where access is checked. The
-# convertor keeps other two-segment paths (a mistyped /api/ one, a GET to
-# /run-agent/stream) from coming back as a web page.
-@app.get("/{user_id:public_id}/{run_id:public_id}", include_in_schema=False)
-def run_page() -> FileResponse:
-    """The UI, for a run's URL."""
+# A conversation's own URL is the UI's page too: the UI reads both ids from the
+# path and asks /api/users/... for the conversation, which is where access is
+# checked. The convertor keeps other two-segment paths (a mistyped /api/ one, a
+# GET to /run-agent/stream) from coming back as a web page.
+@app.get("/{user_id:public_id}/{conversation_id:public_id}", include_in_schema=False)
+def conversation_page() -> FileResponse:
+    """The UI, for a conversation's URL."""
     return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 

@@ -21,10 +21,15 @@ def events(response):
     return [(f.split("\n")[0][7:], json.loads(f.split("\n")[1][6:])) for f in frames]
 
 
-def ask(client, query="Does metformin extend lifespan?"):
-    response = client.post("/run-agent/stream", json={"query": query})
-    assert response.status_code == 200
+def ask(client, query="Does metformin extend lifespan?", conversation_id=None):
+    response = client.post("/run-agent/stream", json={"query": query, "conversation_id": conversation_id})
+    assert response.status_code == 200, response.text
     return events(response)
+
+
+def result_of(stream):
+    """The result event's data, or fail with the stream."""
+    return next(data for name, data in stream if name == "result")
 
 
 # Starting, and the UI
@@ -74,33 +79,91 @@ def test_login_and_logout(client):
     assert client.get("/api/me").status_code == 200
 
 
-# Runs
+# Runs and conversations
 
 
-def test_streamed_run_is_saved_and_listed(client, fake_db):
+def test_streamed_run_starts_a_conversation(client, fake_db):
     user = register(client)
     stream = ask(client)
-    assert [name for name, _ in stream] == ["progress", "queries", "evidence", "result", "done"]
-    result = stream[3][1]
-    assert result["answer"] == "## Answer" and re.fullmatch("[0-9a-f]{16}", result["run_id"])
+    assert [name for name, _ in stream] == [
+        "started", "progress", "route", "progress", "queries", "evidence", "result", "done"
+    ]
+    started, result = stream[0][1], result_of(stream)
+    assert result["answer"] == "## Answer 1" and result["action"] == "search"
+    assert re.fullmatch("[0-9a-f]{16}", result["run_id"])
+    assert started == {"conversation_id": result["conversation_id"], "run_id": result["run_id"]}
 
     stored = fake_db.runs[result["run_id"]]
-    assert stored["status"] == "completed" and stored["paper_count"] == 1
+    assert stored["status"] == "completed" and stored["paper_count"] == 1 and stored["action"] == "search"
 
-    history = client.get(f"/api/users/{user['id']}/runs").json()
-    assert [run["id"] for run in history] == [result["run_id"]]
-    assert set(history[0]) == {"id", "query", "paper_count", "duration_s", "created_at"}
-    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", history[0]["created_at"])
+    conversations = client.get(f"/api/users/{user['id']}/conversations").json()
+    assert [c["id"] for c in conversations] == [result["conversation_id"]]
+    assert conversations[0]["title"] == "Does metformin extend lifespan?"
+    assert conversations[0]["turn_count"] == 1 and conversations[0]["paper_count"] == 1
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", conversations[0]["last_turn_at"])
 
-    run = client.get(f"/api/users/{user['id']}/runs/{result['run_id']}").json()
-    assert run["query"] == "Does metformin extend lifespan?"
-    assert run["evidence"] == result["evidence"] and run["answer"] == "## Answer"
+    conversation = client.get(f"/api/users/{user['id']}/conversations/{result['conversation_id']}").json()
+    (turn,) = conversation["turns"]
+    assert turn["id"] == result["run_id"] and turn["query"] == "Does metformin extend lifespan?"
+    assert turn["evidence"] == result["evidence"] and turn["answer"] == "## Answer 1"
+    assert turn["action"] == "search"
+
+
+def test_follow_up_sends_the_conversation_so_far(client, fake_db, fake_librarian):
+    user = register(client)
+    first = result_of(ask(client))
+    assert fake_librarian.history == []  # a new conversation has none
+    second = result_of(ask(client, "And in rats?", first["conversation_id"]))
+    assert second["conversation_id"] == first["conversation_id"]
+    assert fake_librarian.history == [
+        {"role": "user", "content": "Does metformin extend lifespan?"},
+        {"role": "assistant", "content": "## Answer 1"},
+    ]
+
+    (summary,) = client.get(f"/api/users/{user['id']}/conversations").json()
+    assert summary["turn_count"] == 2 and summary["title"] == "Does metformin extend lifespan?"
+    turns = client.get(f"/api/users/{user['id']}/conversations/{first['conversation_id']}").json()["turns"]
+    assert [t["query"] for t in turns] == ["Does metformin extend lifespan?", "And in rats?"]
+
+    result_of(ask(client, "Something else"))  # a new conversation, listed first
+    assert len(client.get(f"/api/users/{user['id']}/conversations").json()) == 2
+
+
+def test_history_is_the_latest_answered_turns(client, fake_librarian):
+    register(client)
+    conversation_id = result_of(ask(client, "q1"))["conversation_id"]
+    for n in (2, 3, 4):
+        result_of(ask(client, f"q{n}", conversation_id))
+    fake_librarian.error = LibrarianError("LLM backend returned 500")
+    ask(client, "q5", conversation_id)
+    fake_librarian.error = None
+    result_of(ask(client, "q6", conversation_id))
+    # The three latest answered turns, oldest first; the failed q5 isn't one.
+    assert [m["content"] for m in fake_librarian.history] == [
+        "q2", "## Answer 2", "q3", "## Answer 3", "q4", "## Answer 4"
+    ]
+
+
+def test_a_reply_is_a_turn_without_evidence(client, fake_db, fake_librarian):
+    user = register(client)
+    conversation_id = result_of(ask(client))["conversation_id"]
+    fake_librarian.action = "reply"
+    stream = ask(client, "Which paper said so?", conversation_id)
+    assert [name for name, _ in stream] == ["started", "progress", "route", "result", "done"]
+    assert stream[2][1]["action"] == "reply"
+    reply = result_of(stream)
+    assert reply["action"] == "reply" and reply["evidence"]["papers"] == []
+    assert fake_db.runs[reply["run_id"]]["action"] == "reply"
+    turns = client.get(f"/api/users/{user['id']}/conversations/{conversation_id}").json()["turns"]
+    assert [(t["action"], t["paper_count"]) for t in turns] == [("search", 1), ("reply", 0)]
 
 
 def test_blocking_run(client):
     register(client)
     result = client.post("/run-agent", json={"query": "q"}).json()
-    assert set(result) == {"answer", "evidence", "run_id"}
+    assert set(result) == {"action", "answer", "query", "language", "evidence", "run_id", "conversation_id"}
+    follow_up = client.post("/run-agent", json={"query": "q2", "conversation_id": result["conversation_id"]})
+    assert follow_up.json()["conversation_id"] == result["conversation_id"]
 
 
 def test_runs_always_read_full_text(client, fake_db, fake_librarian):
@@ -115,23 +178,45 @@ def test_runs_need_a_session(client):
     assert client.post("/run-agent/stream", json={"query": "q"}).status_code == 401
 
 
-def test_other_accounts_runs_are_hidden(client):
+def test_other_accounts_conversations_are_hidden(client, fake_librarian):
     ada = register(client)
-    run_id = ask(client)[3][1]["run_id"]
+    conversation_id = result_of(ask(client))["conversation_id"]
     client.post("/api/auth/logout")
     bob = register(client, email="bob@example.org")
-    assert client.get(f"/api/users/{ada['id']}/runs").status_code == 403
-    assert client.get(f"/api/users/{bob['id']}/runs/{run_id}").status_code == 404
-    assert client.delete(f"/api/users/{bob['id']}/runs/{run_id}").status_code == 404
-    assert client.get(f"/api/users/{bob['id']}/runs/not-a-run-id").status_code == 404
+    assert client.get(f"/api/users/{ada['id']}/conversations").status_code == 403
+    assert client.get(f"/api/users/{bob['id']}/conversations/{conversation_id}").status_code == 404
+    assert client.delete(f"/api/users/{bob['id']}/conversations/{conversation_id}").status_code == 404
+    assert client.get(f"/api/users/{bob['id']}/conversations/not-an-id").status_code == 404
+    # Nor can Bob follow up on Ada's conversation: refused before any stream.
+    calls = fake_librarian.calls
+    for path in ("/run-agent/stream", "/run-agent"):
+        refused = client.post(path, json={"query": "q", "conversation_id": conversation_id})
+        assert refused.status_code == 404 and refused.json()["detail"] == "No such conversation."
+    assert client.post("/run-agent", json={"query": "q", "conversation_id": "not-an-id"}).status_code == 404
+    assert fake_librarian.calls == calls
 
 
-def test_delete_run(client, fake_db):
+def test_a_conversation_whose_turns_all_failed_is_hidden_until_one_is_answered(client, fake_librarian):
     user = register(client)
-    run_id = ask(client)[3][1]["run_id"]
-    assert client.delete(f"/api/users/{user['id']}/runs/{run_id}").json() == {"ok": True}
-    assert client.get(f"/api/users/{user['id']}/runs").json() == []
-    assert not fake_db.queries
+    fake_librarian.error = LibrarianError("LLM backend returned 500")
+    stream = ask(client)
+    assert [name for name, _ in stream] == ["started", "error", "done"]
+    conversation_id = stream[0][1]["conversation_id"]
+    assert client.get(f"/api/users/{user['id']}/conversations").json() == []
+    assert client.get(f"/api/users/{user['id']}/conversations/{conversation_id}").status_code == 404
+    fake_librarian.error = None  # Try again, in the same conversation
+    result_of(ask(client, conversation_id=conversation_id))
+    (turn,) = client.get(f"/api/users/{user['id']}/conversations/{conversation_id}").json()["turns"]
+    assert turn["answer"] == "## Answer 2"
+
+
+def test_delete_conversation(client, fake_db):
+    user = register(client)
+    conversation_id = result_of(ask(client))["conversation_id"]
+    result_of(ask(client, "And in rats?", conversation_id))
+    assert client.delete(f"/api/users/{user['id']}/conversations/{conversation_id}").json() == {"ok": True}
+    assert client.get(f"/api/users/{user['id']}/conversations").json() == []
+    assert not fake_db.queries and not fake_db.runs and not fake_db.conversations
 
 
 # Services down
@@ -168,11 +253,11 @@ def test_librarian_down_fails_the_run_clearly(client, fake_db, fake_librarian):
     user = register(client)
     fake_librarian.error = unavailable("librarian service")
     stream = ask(client)
-    assert [name for name, _ in stream] == ["error", "done"]
-    assert stream[0][1]["error"].startswith("The librarian service is unavailable")
+    assert [name for name, _ in stream] == ["started", "error", "done"]
+    assert stream[1][1]["error"].startswith("The librarian service is unavailable")
     (run,) = fake_db.runs.values()
     assert run["status"] == "failed" and "unavailable" in run["error"]
-    assert client.get(f"/api/users/{user['id']}/runs").json() == []  # failures stay out of the history
+    assert client.get(f"/api/users/{user['id']}/conversations").json() == []  # failures stay out of the history
 
     blocking = client.post("/run-agent", json={"query": "q"})
     assert blocking.status_code == 503 and "librarian service" in blocking.json()["detail"]
@@ -181,7 +266,7 @@ def test_librarian_down_fails_the_run_clearly(client, fake_db, fake_librarian):
 def test_librarian_busy_and_errors_reach_the_user(client, fake_librarian):
     register(client)
     fake_librarian.error = LibrarianBusy("The librarian is busy with other questions. Try again in a minute.")
-    assert ask(client)[0][1] == {"error": "The librarian is busy with other questions. Try again in a minute."}
+    assert ask(client)[1][1] == {"error": "The librarian is busy with other questions. Try again in a minute."}
     fake_librarian.error = LibrarianError("LLM backend returned 500")
-    assert ask(client)[0][1] == {"error": "LLM backend returned 500"}
+    assert ask(client)[1][1] == {"error": "LLM backend returned 500"}
     assert client.post("/run-agent", json={"query": "q"}).status_code == 502

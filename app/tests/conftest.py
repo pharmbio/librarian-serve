@@ -19,6 +19,7 @@ def _now() -> datetime:
 class FakeDb:
     def __init__(self) -> None:
         self.users, self.sessions, self.queries, self.runs = {}, {}, {}, {}
+        self.conversations = {}
         self.down = False
 
     def _up(self) -> None:
@@ -34,7 +35,8 @@ class FakeDb:
 
     def _run_out(self, run):
         query = self.queries[run["query_id"]]
-        return {**run, "user_id": query["user_id"], "query_text": query["text"]}
+        return {**run, "user_id": query["user_id"], "conversation_id": query["conversation_id"],
+                "query_text": query["text"]}
 
     def create_user(self, email, password_hash, institution, position):
         self._up()
@@ -66,10 +68,47 @@ class FakeDb:
         self._up()
         self.sessions.pop(token_hash, None)
 
-    def create_query(self, user_id, text, full_text_enrichment):
+    def create_conversation(self, user_id, title):
         self._up()
-        query = {"id": secrets.token_hex(8), "user_id": user_id, "text": text,
-                 "full_text_enrichment": full_text_enrichment, "created_at": _now()}
+        conversation = {"id": secrets.token_hex(8), "user_id": user_id, "title": title, "created_at": _now()}
+        self.conversations[conversation["id"]] = conversation
+        return dict(conversation)
+
+    def get_conversation(self, conversation_id):
+        self._up()
+        conversation = self.conversations.get(conversation_id)
+        return dict(conversation) if conversation else None
+
+    def list_conversations(self, user_id):
+        self._up()
+        summaries = []
+        for conversation in self.conversations.values():
+            turns = self.list_turns(conversation["id"])
+            if conversation["user_id"] == user_id and turns:
+                summaries.append({
+                    **conversation, "turn_count": len(turns),
+                    "paper_count": sum(turn["paper_count"] for turn in turns),
+                    "last_turn_at": turns[-1]["created_at"],
+                })
+        return sorted(summaries, key=lambda c: c["last_turn_at"], reverse=True)
+
+    def delete_conversation(self, conversation_id):
+        self._up()
+        self.conversations.pop(conversation_id, None)
+        for query in [q for q in self.queries.values() if q["conversation_id"] == conversation_id]:
+            self.delete_query(query["id"])
+
+    def list_turns(self, conversation_id, with_evidence=True):
+        self._up()
+        turns = [self._run_out(r) for r in self.runs.values()
+                 if self.queries[r["query_id"]]["conversation_id"] == conversation_id
+                 and r["status"] == "completed"]
+        return [turn if with_evidence else {**turn, "evidence": None} for turn in turns]
+
+    def create_query(self, user_id, text, full_text_enrichment, conversation_id):
+        self._up()
+        query = {"id": secrets.token_hex(8), "user_id": user_id, "conversation_id": conversation_id,
+                 "text": text, "full_text_enrichment": full_text_enrichment, "created_at": _now()}
         self.queries[query["id"]] = query
         return query
 
@@ -80,7 +119,7 @@ class FakeDb:
 
     def create_run(self, query_id):
         self._up()
-        run = {"id": secrets.token_hex(8), "query_id": query_id, "status": "pending",
+        run = {"id": secrets.token_hex(8), "query_id": query_id, "status": "pending", "action": None,
                "answer": None, "evidence": None, "paper_count": None,
                "duration_s": None, "error": None, "created_at": _now()}
         self.runs[run["id"]] = run
@@ -104,16 +143,32 @@ class FakeDb:
 
 
 class FakeLibrarian:
+    """Searches, or with ``action = "reply"`` replies from the conversation.
+    Answers "## Answer <n>" to its n-th question."""
+
     def __init__(self) -> None:
         self.error = None
         self.calls = 0
+        self.action = "search"
         self.full_text_enrichment = None
+        self.history = None
 
-    def run(self, query, full_text_enrichment=True, on_progress=None, on_queries=None, on_evidence=None):
+    def run(self, query, full_text_enrichment=True, conversation_history=None,
+            on_progress=None, on_route=None, on_queries=None, on_evidence=None):
         self.calls += 1
         self.full_text_enrichment = full_text_enrichment
+        self.history = conversation_history
         if self.error:
             raise self.error
+        answer = f"## Answer {self.calls}"
+        if on_progress:
+            on_progress("Reading the question")
+        if on_route:
+            on_route({"action": self.action, "query": query, "language": "English"})
+        if self.action == "reply":
+            evidence = {"query": query, "search_queries": [], "papers": []}
+            return {"action": "reply", "answer": answer, "query": query, "language": "English",
+                    "evidence": evidence}
         if on_progress:
             on_progress("Searching Europe PMC")
         if on_queries:
@@ -122,7 +177,8 @@ class FakeLibrarian:
                     "papers": [{"title": "T", "citation_key": "Keys 2025"}]}
         if on_evidence:
             on_evidence(evidence)
-        return {"answer": "## Answer", "evidence": evidence}
+        return {"action": "search", "answer": answer, "query": query, "language": "English",
+                "evidence": evidence}
 
 
 @pytest.fixture

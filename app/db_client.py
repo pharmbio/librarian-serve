@@ -1,6 +1,7 @@
-"""The app's database: users, sessions, queries and runs, in the schema
-librarian of the Supabase container (../postgres-db), reached through its REST
-API (PostgREST) at SUPABASE_URL. Every read and write the app makes goes
+"""The app's database: users, sessions, conversations, queries and runs, in the
+schema librarian of the Supabase container (../postgres-db), reached through its
+REST API (PostgREST) at SUPABASE_URL. A conversation is a thread of turns: each
+turn is a query (the question) and its run (the answer). Every read and write the app makes goes
 through here. The Supabase container creates and changes the tables
 (postgres-db/config/librarian/); the app never does.
 
@@ -34,15 +35,20 @@ _NEXT = {
 }
 
 # The columns each call reads. A run's query comes along, through the foreign
-# key, for the user it belongs to and the question's text.
+# key, for the user and conversation it belongs to and the question's text.
 _USER = "id,email,institution,position,created_at,last_login_at"
 _SESSION = f"created_at,expires_at,user:users({_USER})"
-_QUERY = "id,user_id,text,full_text_enrichment,created_at"
+_CONVERSATION = "id,user_id,title,created_at"
+_CONVERSATION_SUMMARY = "id,title,created_at,turn_count,paper_count,last_turn_at"
+_QUERY = "id,user_id,conversation_id,text,full_text_enrichment,created_at"
 _RUN_SUMMARY = (
-    "id,query_id,status,paper_count,duration_s,error,"
-    "created_at,updated_at,started_at,finished_at,queries!inner(user_id,text)"
+    "id,query_id,status,action,paper_count,duration_s,error,"
+    "created_at,updated_at,started_at,finished_at,"
+    "queries!inner(user_id,conversation_id,text)"
 )
-_RUN = f"{_RUN_SUMMARY},answer,evidence"
+# A run as a turn of a conversation shows it, and the run in full.
+_TURN = f"{_RUN_SUMMARY},answer"
+_RUN = f"{_TURN},evidence"
 
 
 class Conflict(Exception):
@@ -90,6 +96,18 @@ def _session_out(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _conversation(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {**row, "created_at": _time(row["created_at"])}
+
+
+def _conversation_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        **row,
+        "created_at": _time(row["created_at"]),
+        "last_turn_at": _time(row["last_turn_at"]),
+    }
+
+
 def _query(row: Dict[str, Any]) -> Dict[str, Any]:
     return {**row, "created_at": _time(row["created_at"])}
 
@@ -99,8 +117,10 @@ def _run_summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "id": row["id"],
         "query_id": row["query_id"],
         "user_id": row["queries"]["user_id"],
+        "conversation_id": row["queries"]["conversation_id"],
         "query_text": row["queries"]["text"],
         "status": row["status"],
+        "action": row["action"],
         "paper_count": row["paper_count"],
         "duration_s": row["duration_s"],
         "error": row["error"],
@@ -112,7 +132,8 @@ def _run_summary(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _run(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {**_run_summary(row), "answer": row["answer"], "evidence": row["evidence"]}
+    # A turn read without its evidence (see list_turns) has none.
+    return {**_run_summary(row), "answer": row["answer"], "evidence": row.get("evidence")}
 
 
 class DbClient:
@@ -206,6 +227,27 @@ class DbClient:
         )
         return response.json()
 
+    def _read_all(self, table: str, params: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Every row a read matches, however many pages that takes. PostgREST
+        returns at most PGRST_DB_MAX_ROWS rows at a time, and with
+        count=exact, the total after the / of Content-Range."""
+        rows: List[Dict[str, Any]] = []
+        total = None
+        while total is None or len(rows) < total:
+            response = self._request(
+                "GET",
+                table,
+                idempotent=True,
+                params={**params, "offset": str(len(rows))},
+                prefer="count=exact",
+            )
+            page = response.json()
+            if not page:
+                break
+            rows += page
+            total = int(response.headers["Content-Range"].rpartition("/")[2])
+        return rows
+
     def check(self) -> None:
         """Reach the database once, as at startup.
 
@@ -275,12 +317,74 @@ class DbClient:
         """End a session: a sign-out. Ending one that is gone is fine."""
         self._request("DELETE", "sessions", idempotent=True, params={"token_hash": f"eq.{token_hash}"})
 
+    # Conversations
+
+    def create_conversation(self, user_id: str, title: str) -> Dict[str, Any]:
+        """Start a conversation, titled with its first question.
+
+        :raises Conflict: if there is no such user.
+        """
+        row = {"id": new_id(), "user_id": user_id, "title": title, "created_at": _iso(utcnow())}
+        (conversation,) = self._write(
+            "POST", "conversations", idempotent=False, params={"select": _CONVERSATION}, json=row
+        )
+        return _conversation(conversation)
+
+    def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        rows = self._read("conversations", {"select": _CONVERSATION, "id": f"eq.{conversation_id}"})
+        return _conversation(rows[0]) if rows else None
+
+    def list_conversations(self, user_id: str) -> List[Dict[str, Any]]:
+        """The user's conversations that have at least one answered turn, the
+        one with the latest turn first. Each has ``turn_count``, the papers its
+        turns found (``paper_count``) and ``last_turn_at``."""
+        rows = self._read_all(
+            "conversation_summaries",
+            {
+                "select": _CONVERSATION_SUMMARY,
+                "user_id": f"eq.{user_id}",
+                "order": "last_turn_at.desc,id.desc",
+            },
+        )
+        return [_conversation_summary(row) for row in rows]
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        """Delete a conversation with its queries and runs. Deleting one that is
+        gone is fine."""
+        self._request("DELETE", "conversations", idempotent=True, params={"id": f"eq.{conversation_id}"})
+
+    def list_turns(self, conversation_id: str, with_evidence: bool = True) -> List[Dict[str, Any]]:
+        """A conversation's answered turns, oldest first, as runs (``query_text``
+        is the question, ``answer`` the answer). Failed and unfinished turns
+        are left out.
+
+        :param with_evidence: Whether to read each turn's evidence too, the
+            largest column by far. Without it, ``evidence`` is None.
+        """
+        rows = self._read_all(
+            "runs",
+            {
+                "select": _RUN if with_evidence else _TURN,
+                "queries.conversation_id": f"eq.{conversation_id}",
+                "status": "eq.completed",
+                "order": "created_at.asc,id.asc",
+            },
+        )
+        return [_run(row) for row in rows]
+
     # Queries
 
-    def create_query(self, user_id: str, text: str, full_text_enrichment: bool) -> Dict[str, Any]:
+    def create_query(
+        self, user_id: str, text: str, full_text_enrichment: bool, conversation_id: str
+    ) -> Dict[str, Any]:
+        """A question asked in a conversation: one turn of it.
+
+        :raises Conflict: if there is no such user or conversation.
+        """
         row = {
             "id": new_id(),
             "user_id": user_id,
+            "conversation_id": conversation_id,
             "text": text,
             "full_text_enrichment": full_text_enrichment,
             "created_at": _iso(utcnow()),
@@ -321,9 +425,10 @@ class DbClient:
         paper_count: Optional[int] = None,
         duration_s: Optional[float] = None,
         error: Optional[str] = None,
+        action: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Move a run along and store its output. A field left as None stays as
-        it is. ``status`` moves pending -> running -> completed or failed
+        it is. ``action`` is how the librarian answered: ``search`` or ``reply``. ``status`` moves pending -> running -> completed or failed
         (pending -> failed too), and a finished run can't change at all.
 
         :raises Conflict: for any other move, or if there is no such run.
@@ -334,6 +439,7 @@ class DbClient:
             "paper_count": paper_count,
             "duration_s": duration_s,
             "error": error,
+            "action": action,
         }
         rows = self._read("runs", {"select": "status", "id": f"eq.{run_id}"})
         if not rows:
@@ -373,21 +479,4 @@ class DbClient:
             params["queries.user_id"] = f"eq.{user_id}"
         if status is not None:
             params["status"] = f"eq.{status}"
-        # PostgREST returns at most PGRST_DB_MAX_ROWS rows at a time, and with
-        # count=exact, the total after the / of Content-Range.
-        rows: List[Dict[str, Any]] = []
-        total = None
-        while total is None or len(rows) < total:
-            response = self._request(
-                "GET",
-                "runs",
-                idempotent=True,
-                params={**params, "offset": str(len(rows))},
-                prefer="count=exact",
-            )
-            page = response.json()
-            if not page:
-                break
-            rows += page
-            total = int(response.headers["Content-Range"].rpartition("/")[2])
-        return [_run_summary(row) for row in rows]
+        return [_run_summary(row) for row in self._read_all("runs", params)]

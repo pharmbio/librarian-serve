@@ -109,9 +109,20 @@ def make_user(client, email="Ada@Example.org"):
     return client.create_user(email, "$argon2id$x", "EMBL", "PI")
 
 
-def make_run(client, user_id, text="Does metformin extend lifespan?"):
-    query = client.create_query(user_id, text, True)
+def make_run(client, user_id, text="Does metformin extend lifespan?", conversation_id=None):
+    """A question and its pending run: the first turn of a new conversation,
+    or the next one of ``conversation_id``."""
+    conversation_id = conversation_id or client.create_conversation(user_id, text)["id"]
+    query = client.create_query(user_id, text, True, conversation_id)
     return query, client.create_run(query["id"])
+
+
+def answer(client, run_id, text="## Yes", paper_count=1, action="search"):
+    client.update_run(run_id, status="running")
+    return client.update_run(
+        run_id, status="completed", action=action, answer=text,
+        evidence={"papers": [{}] * paper_count}, paper_count=paper_count,
+    )
 
 
 def test_reaches_the_database(db):
@@ -171,17 +182,20 @@ def test_expired_sessions_are_gone(db, monkeypatch):
 def test_run_lifecycle(db):
     user = make_user(db)
     query, run = make_run(db, user["id"])
-    assert run["status"] == "pending" and run["started_at"] is None
+    assert run["status"] == "pending" and run["started_at"] is None and run["action"] is None
     assert run["query_text"] == query["text"] and run["user_id"] == user["id"]
+    assert run["conversation_id"] == query["conversation_id"]
 
     running = db.update_run(run["id"], status="running")
     assert running["status"] == "running" and running["started_at"]
 
     evidence = {"query": query["text"], "search_queries": ["q"], "papers": [{"title": "T é"}]}
     done = db.update_run(
-        run["id"], status="completed", answer="## Yes", evidence=evidence, paper_count=1, duration_s=12.3
+        run["id"], status="completed", action="reply", answer="## Yes", evidence=evidence,
+        paper_count=1, duration_s=12.3,
     )
     assert done["status"] == "completed" and done["finished_at"] >= done["started_at"]
+    assert done["action"] == "reply"
     assert done["evidence"] == evidence and done["paper_count"] == 1 and done["duration_s"] == 12.3
     assert db.get_run(run["id"]) == done
     assert db.get_run("0000000000000000") is None
@@ -199,6 +213,12 @@ def test_illegal_transitions_are_conflicts(db):
         db.update_run("0000000000000000", status="running")
     with pytest.raises(Conflict):
         db.create_run("0000000000000000")
+    with pytest.raises(Conflict):
+        db.create_query(user["id"], "q", True, "0000000000000000")
+    _, other = make_run(db, user["id"])
+    db.update_run(other["id"], status="running")
+    with pytest.raises(ServiceUnavailable):  # the table only takes 'search' and 'reply'
+        db.update_run(other["id"], status="completed", action="guess")
 
 
 def test_list_runs_by_user_and_status(db):
@@ -233,6 +253,68 @@ def test_list_runs_reads_past_the_row_limit(db, monkeypatch):
     assert [r["query_text"] for r in db.list_runs(user_id=user["id"])] == ["q2", "q1", "q0"]
 
 
+# Conversations
+
+
+def test_a_conversation_is_its_answered_turns(db):
+    user = make_user(db)
+    conversation = db.create_conversation(user["id"], "Does metformin extend lifespan?")
+    assert db.get_conversation(conversation["id"]) == conversation
+    assert conversation["user_id"] == user["id"] and conversation["created_at"].tzinfo is not None
+    assert db.get_conversation("0000000000000000") is None
+    with pytest.raises(Conflict):
+        db.create_conversation("0000000000000000", "q")
+
+    _, first = make_run(db, user["id"], "Does metformin extend lifespan?", conversation["id"])
+    answer(db, first["id"], "## In mice, yes", paper_count=3)
+    _, failed = make_run(db, user["id"], "And in rats?", conversation["id"])
+    db.update_run(failed["id"], status="failed", error="boom")
+    _, second = make_run(db, user["id"], "And in rats?", conversation["id"])
+    answer(db, second["id"], "## Also in rats", paper_count=0, action="reply")
+    make_run(db, user["id"], "Still running", conversation["id"])
+
+    turns = db.list_turns(conversation["id"])
+    assert [(t["id"], t["query_text"], t["action"]) for t in turns] == [
+        (first["id"], "Does metformin extend lifespan?", "search"),
+        (second["id"], "And in rats?", "reply"),
+    ]
+    assert turns[0]["answer"] == "## In mice, yes" and len(turns[0]["evidence"]["papers"]) == 3
+    light = db.list_turns(conversation["id"], with_evidence=False)
+    assert [t["answer"] for t in light] == ["## In mice, yes", "## Also in rats"]
+    assert all(t["evidence"] is None for t in light)
+
+
+def test_list_conversations_counts_answered_turns(db):
+    ada, bob = make_user(db), make_user(db, "bob@example.org")
+    _, unanswered = make_run(db, ada["id"], "never answered")
+    older = db.create_conversation(ada["id"], "older")
+    _, run = make_run(db, ada["id"], "older", older["id"])
+    answer(db, run["id"], paper_count=2)
+    _, run = make_run(db, ada["id"], "older, again", older["id"])
+    answer(db, run["id"], paper_count=5)
+    _, newer = make_run(db, ada["id"], "newer")
+    answer(db, newer["id"], paper_count=1)
+    _, bobs = make_run(db, bob["id"], "bob's")
+    answer(db, bobs["id"])
+
+    listed = db.list_conversations(ada["id"])
+    assert [(c["title"], c["turn_count"], c["paper_count"]) for c in listed] == [
+        ("newer", 1, 1), ("older", 2, 7)
+    ]
+    assert listed[0]["last_turn_at"] >= listed[1]["last_turn_at"]
+    assert listed[1]["id"] == older["id"] and listed[1]["created_at"].tzinfo is not None
+
+
+def test_delete_conversation_cascades(db):
+    user = make_user(db)
+    query, run = make_run(db, user["id"])
+    answer(db, run["id"])
+    db.delete_conversation(query["conversation_id"])
+    assert db.get_conversation(query["conversation_id"]) is None
+    assert db.get_run(run["id"]) is None and db.list_conversations(user["id"]) == []
+    db.delete_conversation(query["conversation_id"])  # a repeat is fine
+
+
 def test_delete_query_cascades_to_runs(db):
     user = make_user(db)
     query, run = make_run(db, user["id"])
@@ -243,7 +325,8 @@ def test_delete_query_cascades_to_runs(db):
 
 def test_deleting_a_user_deletes_their_data(db):
     user = make_user(db)
-    make_run(db, user["id"])
+    query, _ = make_run(db, user["id"])
     db.create_session(TOKEN, user["id"], 60)
     delete_users(db, f"eq.{user['id']}")
     assert db.list_runs() == [] and db.get_session(TOKEN) is None
+    assert db.get_conversation(query["conversation_id"]) is None
