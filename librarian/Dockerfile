@@ -1,8 +1,8 @@
 # The librarian service: the agent behind a small HTTP API on :7680
-# (orchestrator.py). Stateless; the LLM backend is set by LLM_*. Its settings,
-# secrets included, are set on the container (librarian/.env.example): on the
-# hosting platform, or with docker run --env-file librarian/.env. No image has
-# them.
+# (orchestrator.py), one conversation turn per request. Stateless; the LLM
+# backend is set by LLM_*. Its settings, secrets included, are set on the
+# container (librarian/.env.example): on the hosting platform, or with
+# docker run --env-file librarian/.env. No image has them.
 # Build from this folder:  docker build -t librarian .
 FROM ghcr.io/astral-sh/uv:0.11.21 AS uv
 
@@ -13,13 +13,14 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
 ENV USER=librarian-core
-ENV HOME=/home/$USER    
+ENV HOME=/home/$USER
 
 RUN useradd -m -u 1000 $USER
 
 WORKDIR $HOME/app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+# With the cache extra, so LIBRARIAN_CACHE_DIR can turn the full-text cache on.
+RUN uv sync --frozen --no-dev --extra cache
 
 # Runtime stage: the venv and the code the server needs, no uv.
 FROM python:3.12.14-slim-trixie
@@ -27,7 +28,7 @@ ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 COPY --from=build /opt/venv /opt/venv
 
 ENV USER=librarian-core
-ENV HOME=/home/$USER  
+ENV HOME=/home/$USER
 
 RUN useradd -m -u 1000 $USER
 

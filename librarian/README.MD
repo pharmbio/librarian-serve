@@ -1,8 +1,7 @@
 <div align="center">
 
 <img src="assets/ai-librarian.png" alt="EMBL AI Librarian logo" width="140">
-
-<h1><span style="color:#18974C">EMBL AI Librarian</span></h1>
+<h1><span style="color:#18974C">EMBL AI Librarian</span></h1></td>
 
 <h3>A life-sciences knowledge layer for AI agents</h3>
 
@@ -25,18 +24,18 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
 [![Stars](https://img.shields.io/github/stars/petroni-lab/librarian?style=social)](https://github.com/petroni-lab/librarian/stargazers)
 
-<br>
+</div>
 
-<h4>Install as an agent skill</h4>
+**EMBL AI Librarian** is a knowledge layer that upgrades Europe PMC for AI agents. Its
+40M+ records were built for people: they expect keywords and fielded query syntax, and
+return whole papers. With Librarian, an agent asks in natural language and gets back
+the evidence that answers it: the relevant passages, each with its citation. A single
+LLM plans complementary sub-queries against the live Europe PMC search, reads the
+papers they return, and locates the evidence. Across literature synthesis, claim
+verification, open-domain QA and downstream biology tasks, grounding agents in
+Librarian improves results over strong published baselines and over web search.
 
-[![Claude Code](https://img.shields.io/badge/Claude_Code-install-D97757?style=for-the-badge&logo=claude&logoColor=white)](#️-installation)
-[![Codex](https://img.shields.io/badge/Codex-install-412991?style=for-the-badge)](#️-installation)
-[![Antigravity](https://img.shields.io/badge/Antigravity-install-4285F4?style=for-the-badge&logo=google&logoColor=white)](#️-installation)
-[![opencode](https://img.shields.io/badge/opencode-install-1A1A1A?style=for-the-badge&logo=opencode&logoColor=white)](#️-installation)
-
-<sub>Click your agent for a one-minute, no-terminal install. No API key needed.</sub>
-
-<br>
+<div align="center">
 
 <h5>If EMBL AI Librarian is useful to you, please consider giving it a ⭐</h5>
 
@@ -44,19 +43,57 @@
 
 ---
 
-## 🛠️ Installation
+## 📰 News
 
-The easiest way to use Librarian is as a **skill inside your AI assistant** — no
-coding, no API key: it uses your assistant's own model access. Pick your app below.
+* **[2026.09.30]** **v1.0** — the reference release for the
+  [paper](https://arxiv.org/abs/2607.28229). It ships the evaluation harness: the
+  benchmark suites and scripts for ScholarQA-Bench, ProClaim-eval, open-form LitQA2 and
+  LAB-Bench, each run in its own locked environment. See
+  [`evals/Literature/`](evals/Literature/README.md).
+* **[2026.09.14]** Synthesis agent: `SynthesisAgent` turns the retrieved evidence
+  into a cited answer, and `main.py` now does so by default — pass `--retrieval-only`
+  for the previous ranked-passages output. It reuses the skill's summarizer prompt,
+  so the citation discipline is identical whichever path produced the answer.
+<details>
+<summary>Older news</summary>
 
-<details open>
+* **[2026.09.11]** Librarian is now installable as an **agent skill** — two commands
+  in Claude Code or Codex, and a directory symlink for Antigravity and opencode.
+  See [🛠️ Install as an agent skill](#️-install-as-an-agent-skill). The same run is also served over HTTP by
+  [`orchestrator.py`](orchestrator.py) — see [🐍 Python, CLI & HTTP](#-python-cli--http).
+* **[2026.09.03]** Retrieval pipeline rework: paragraph-level pooling across
+  sub-queries, a single relevance judge (replacing the two concurrent
+  full-text/abstract judges), snippet-level citations, author affiliation,
+  uncapped per-paper evidence, and an optional `tracer=` span-tracing hook.
+  See [⚙️ Configuration](#️-configuration) — several knobs changed with it.
+* **[2026.07.31]** Preprint available on arXiv.
+* **[2026.07.30]** Initial release of the EMBL AI Librarian agent and retrieval pipeline.
+
+</details>
+
+---
+
+## 🛠️ Install as an agent skill
+
+<div align="center">
+
+![Codex](https://img.shields.io/badge/Codex-install-412991?style=for-the-badge)
+![Claude Code](https://img.shields.io/badge/Claude_Code-install-D97757?style=for-the-badge&logo=claude&logoColor=white)
+![Antigravity](https://img.shields.io/badge/Antigravity-install-4285F4?style=for-the-badge&logo=google&logoColor=white)
+![opencode](https://img.shields.io/badge/opencode-install-1A1A1A?style=for-the-badge&logo=opencode&logoColor=white)
+
+</div>
+
+Open the section for your agent for a one-minute install. No API key needed: Librarian runs on your agent's own model access.
+
+<details>
 <summary><b>Codex / ChatGPT (desktop app)</b> — no terminal needed</summary>
 
 <br>
 
-**Settings → Plugins → Add → Add plugin marketplace**, source `petroni-lab/librarian`,
-then search **librarian** in Plugins and click **+**. Type `/librarian` followed by
-your question in a new chat.
+**Settings → Plugins → Add → Add plugin marketplace**, source
+`petroni-lab/librarian`, then search **librarian** in Plugins and click **+**. Type
+`/librarian` followed by your question in a new chat.
 
 <img src="assets/install-codex.gif" alt="Installing Librarian from the Codex desktop app: Settings, Plugins, Add plugin marketplace, petroni-lab/librarian, then add librarian" width="90%">
 
@@ -73,8 +110,9 @@ codex plugin add librarian@librarian
 
 <br>
 
-**Settings → Plugins → Add → Add marketplace**, type `petroni-lab/librarian`, then
-install **EMBL AI Librarian**. Type `/librarian` followed by your question in a new chat.
+**Settings → Plugins → Add → Add marketplace**, type
+`petroni-lab/librarian`, then install **EMBL AI Librarian**. Type `/librarian`
+followed by your question in a new chat.
 
 <img src="assets/install-claude-code.gif" alt="Installing Librarian from the Claude desktop app: Settings, Plugins, Add marketplace, petroni-lab/librarian, install" width="90%">
 
@@ -85,7 +123,6 @@ Prefer the Claude Code CLI?
 ```
 
 </details>
-
 
 <details>
 <summary><b>Antigravity / opencode</b></summary>
@@ -115,7 +152,9 @@ Authenticate the `agy` CLI once interactively before first use.
 
 </details>
 
-Then ask a biomedical question — the skill activates on its own:
+### Using the skill
+
+Ask a biomedical question — the skill activates on its own:
 
 > *Find me evidence on whether metformin extends lifespan in mammals.*
 
@@ -190,52 +229,40 @@ for paper in agent.run("does metformin extend lifespan in mammals?"):
 takes `on_progress=callable` for live stage updates, and the constructor takes
 `tracer=` for span tracing (see [`tracing_port.py`](librarian/tracing_port.py)).
 
+**Embedding librarian** in another application: install it from a commit tarball
+(`pip install https://github.com/petroni-lab/librarian/archive/<sha>.tar.gz`), then
+plug in your own pieces through the constructor and `run()`:
+
+- `llm_client=` — any object with `chat_completion(messages, temperature=...,
+  max_tokens=...) -> str`, used instead of building one from `LLM_*`.
+- `literature_source=` — your search and full-text backend (a cache, a worker
+  pool, ...), implementing `LiteratureSource` in
+  [`literature_search.py`](librarian/literature_search.py). The default,
+  `EuropePmcSource`, calls Europe PMC directly and fetches full texts concurrently.
+  To cache full texts, wrap any source in `CachedSource(inner, backend)` from
+  [`fulltext_cache.py`](librarian/fulltext_cache.py), with your own `CacheBackend`
+  (anything with `get(key)` and `set(key, value, expire_seconds)`), or set
+  `LIBRARIAN_CACHE_DIR` for the built-in disk cache (see Configuration).
+- `progress_callback=` on `run()` — called with step `0`, `1`, `2` from the calling
+  thread; raise from it to cancel the run.
+
 **HTTP** — [`orchestrator.py`](orchestrator.py) is a minimal FastAPI wrapper:
 
 ```bash
-uv run uvicorn orchestrator:app --port 7680
-curl localhost:7680/api/v1/process -H 'content-type: application/json' \
+uv run uvicorn orchestrator:app --port 8080
+curl localhost:8080/run-agent -H 'content-type: application/json' \
     -d '{"query": "does metformin extend lifespan in mammals?"}'
 ```
 
-`/api/v1/process/stream` streams one `progress` event per stage, then `result`. Both
-take `{"query": ..., "full_text_enrichment": true}` and answer 503 when the server is
-already running `LIBRARIAN_MAX_CONCURRENT_RUNS` questions. With `API_KEY` set, both
-need it in an `X-API-Key` header. `GET /health` is the liveness probe; interactive
-docs are at `/docs`. The [`Dockerfile`](Dockerfile) serves the same API on port 7680.
+`/run-agent/stream` streams one `progress` event per stage, then `result`. Both take
+`{"query": ..., "full_text_enrichment": true}`. `GET /health` is the liveness probe;
+interactive docs are at `/docs`.
 
 > **Reproducing the paper's numbers.** All reported results use **GLM-5**
 > (`glm-5-fp8`) served through [vLLM](https://github.com/vllm-project/vllm) for every
 > LLM stage, with the shipped [`config.toml`](librarian/config.toml). Librarian runs
 > with any OpenAI-compatible endpoint, but weaker models give noticeably different
 > evidence quality — the planner has to emit valid Europe PMC fielded syntax.
-
----
-
-## 📰 News
-
-* **[2026.09.14]** Synthesis agent: `SynthesisAgent` turns the retrieved evidence
-  into a cited answer, and `main.py` now does so by default — pass `--retrieval-only`
-  for the previous ranked-passages output. It reuses the skill's summarizer prompt,
-  so the citation discipline is identical whichever path produced the answer.
-* **[2026.09.11]** Librarian is now installable as an **agent skill** — two commands
-  in Claude Code or Codex, and a directory symlink for Antigravity and opencode.
-  See [🛠️ Installation](#️-installation). The same run is also served over HTTP by
-  [`orchestrator.py`](orchestrator.py) — see [🐍 Python, CLI & HTTP](#-python-cli--http).
-<details>
-<summary>Older news</summary>
-
-* **[2026.09.xx]** *(upcoming)* Evaluation harness: the benchmark suites and scripts
-  behind the reported numbers.
-* **[2026.09.03]** Retrieval pipeline rework: paragraph-level pooling across
-  sub-queries, a single relevance judge (replacing the two concurrent
-  full-text/abstract judges), snippet-level citations, author affiliation,
-  uncapped per-paper evidence, and an optional `tracer=` span-tracing hook.
-  See [⚙️ Configuration](#️-configuration) — several knobs changed with it.
-* **[2026.07.31]** Preprint available on arXiv.
-* **[2026.07.30]** Initial release of the EMBL AI Librarian agent and retrieval pipeline.
-
-</details>
 
 ---
 
@@ -272,11 +299,6 @@ suites we evaluate:
 | LAB-Bench | Macro accuracy (GPT-5.4) | 50.5 | **54.6** (+11.3 on SeqQA) |
 
 <div align="center"><img src="assets/benchmark_summary.png" alt="Benchmark results: Librarian vs. baselines on ScholarQA-Bench, ProClaim-eval, open-form LitQA2, and LAB-Bench" width="80%"></div>
-
-> **Note:** the numbers above are from the pipeline described in the paper (paper-level
-> pooling, two concurrent relevance judges, capped evidence). The retrieval pipeline has
-> since been reworked (see [📰 News](#-news)) and these numbers are pending
-> re-validation against the current single-judge, paragraph-pooled pipeline.
 
 Two comparisons matter and they answer different questions. Against **strong published
 baselines**, Librarian is more than **+16 Citation F1** on ScholarQA-Bench — but part of
@@ -397,6 +419,7 @@ loudly at load rather than silently defaulting:
 | `max_paragraph_words` | 250 | window size before a long paragraph is split |
 | `paragraph_overlap_words` | 50 | overlap between adjacent split windows |
 | `filter_temperature` | 0.1 | relevance-judge temperature |
+| `filter_max_tokens` | 8192 | output budget per Stage-3 LLM call |
 
 `paragraphs_per_judge_batch` should be `>= paragraphs_per_subquery * num_subqueries`
 so the whole pool is judged in one call — the judge ranks globally, but results from
@@ -422,13 +445,14 @@ cfg = replace(load_runtime_config(), num_subqueries=3, papers_per_subquery=20)
 agent = LibrarianAgent(runtime_config=cfg)
 ```
 
-Two settings stay outside the config file, since they belong to the process rather than
+Three settings stay outside the config file, since they belong to the process rather than
 to retrieval tuning:
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `LITERATURE_BM25_STEMMING` | on | Snowball stemming for BM25 (`0` to disable) |
 | `LLM_REASONING_EFFORT` | unset | `reasoning_effort` sent on every chat completion (e.g. `low`, `medium`, `high`); omit for models that don't support it |
+| `LIBRARIAN_CACHE_DIR` | unset | Cache full texts on disk in this directory (needs the `cache` extra: `uv sync --extra cache` in a checkout, or `pip install "librarian[cache] @ https://github.com/petroni-lab/librarian/archive/<sha>.tar.gz"`; the agent skill runs without it). Successes live 60 days, confirmed 404s 7; capped at 1 GB |
 
 </details>
 
@@ -443,7 +467,9 @@ to retrieval tuning:
 pyproject.toml                 project metadata + dependencies (managed by uv)
 main.py                        CLI entrypoint (synthesis by default, --retrieval-only)
 orchestrator.py                minimal FastAPI server (blocking + SSE endpoints)
-.claude-plugin/                plugin manifest (read by Claude Code AND Codex) + Claude marketplace
+.agents/skills/librarian       symlink to skills/librarian (workspace discovery for Antigravity/opencode)
+.claude-plugin/                Claude plugin manifest + Claude marketplace
+.codex-plugin/                 Codex plugin manifest
 .agents/plugins/               Codex marketplace index
 skills/librarian/
   SKILL.md                     the agent skill (Agent Skills spec)
@@ -451,17 +477,21 @@ skills/librarian/
   scripts/step*.py             the four pipeline steps, reusing librarian/agent.py
 librarian/
   agent.py                     the retrieval pipeline (start here)
-  synthesis.py                 SynthesisAgent: cited answer over the evidence
+  synthesis.py                 SynthesisAgent: cited answer over the evidence; with a librarian it also routes, searches and reads the conversation history
   citations.py                 author-year citation keys + the summarizer's paper blocks
   config.py                    LibrarianRuntimeConfig + config.toml loader
   config.toml                  the tuning knobs themselves
   tracing_port.py              TracingPort protocol + no-op default (optional tracer=)
   llm_client.py                minimal OpenAI-compatible client
-  literature_search.py         Europe PMC search
+  literature_search.py         Europe PMC search and full-text fetch
+  fulltext_cache.py            opt-in full-text cache (CachedSource)
   jats.py                      JATS full-text XML -> body paragraphs
   progress.py                  stdlib terminal spinner for live progress
-  prompts/                     query planner, relevance-judge, summarizer prompts
+  prompts/                     query planner, relevance-judge, router, summarizer prompts
   query_validation/            deterministic Europe PMC query validation
+evals/Literature/              evaluation harness: one locked environment per benchmark suite
+tests/                         unit tests
+assets/                        README images and install GIFs
 ```
 
 </details>

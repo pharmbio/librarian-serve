@@ -2,19 +2,48 @@
 
 ``search_scientific_literature_structured`` runs one Europe PMC REST query and
 returns a list of paper dicts (title, abstract, authors, ids, full-text
-availability, ...). The full agent wrapped this in a LangChain retriever and a
-Redis/diskcache look-aside cache; neither is needed to run the librarian, so
-this version is a single plain ``requests`` call with a small retry loop.
+availability, ...). It is a single plain ``requests`` call with a small retry
+loop.
+
+``LiteratureSource`` is the port ``LibrarianAgent`` searches and fetches full
+texts through; ``EuropePmcSource`` is the default implementation built on the
+plain functions in this module. An embedding application can pass its own
+source (with a cache, a worker pool, ...) as
+``LibrarianAgent(literature_source=...)``.
+
+An opt-in full-text cache that wraps any source lives in ``fulltext_cache``.
 """
 
+import threading
 import time
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Protocol
 from urllib.parse import quote
 
 import requests
 
 _SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+# Europe PMC full-text fetch endpoint (PMC id -> JATS XML).
+_FULLTEXT_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# Statuses a retry will never fix: the document is absent or the id is malformed.
+_PERMANENT_FULLTEXT_STATUSES = frozenset({400, 403, 404, 410})
+# Europe PMC intermittently 404s documents that exist (a whole batch was seen
+# doing it, every id serving 200 again minutes later), so a permanent status is
+# confirmed by a second request before it is trusted. Paid once per absent paper.
+_PERMANENT_CONFIRM_DELAY_S = 0.5
+# Full-text fetches only wait on the network, so a fixed count independent of
+# cores. One module-level pool shared by every sub-query thread: this is the
+# total number of concurrent full-text requests Europe PMC sees, not a per-caller
+# limit. Same value as bio-agents' libs/literature_search.py.
+# This is the supported override (ablation and load-test scripts set it): assign
+# librarian.literature_search._FULLTEXT_WORKERS before the first fetch, because
+# the pool is built once, on first use, and keeps that size for the process.
+_FULLTEXT_WORKERS = 8
+_fulltext_pool: "ThreadPoolExecutor | None" = None
+_fulltext_pool_lock = threading.Lock()
 
 
 def _parse_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -124,6 +153,150 @@ def search_scientific_literature_structured(
 
     results = response.json().get("resultList", {}).get("result", [])
     return [_parse_result(r) for r in results]
+
+
+@dataclass
+class Fulltext:
+    """One full-text fetch outcome: the JATS XML, or why it is missing."""
+
+    pmcid: str
+    xml: str = ""
+    error: str = ""
+    # Last, so a positional Fulltext(pmcid, xml, error) still lands in error.
+    status: "int | None" = None
+
+    @property
+    def ok(self) -> bool:
+        """True when the XML was retrieved (it may still be empty or unparseable)."""
+        return not self.error
+
+    @property
+    def permanent(self) -> bool:
+        """True when re-requesting this pmcid cannot change the outcome."""
+        return self.status in _PERMANENT_FULLTEXT_STATUSES
+
+
+def normalize_pmcid(pmcid: str) -> str:
+    """Upper-case a PMC id and prefix bare digits, so one paper keys one way.
+
+    :param pmcid: A PMC id in any of the forms Europe PMC hands out
+        (``PMC123``, ``pmc123``, ``123``).
+    :return: The canonical ``PMC123`` form, used for both the dict key and the URL.
+    :rtype: str
+    """
+    normalized = str(pmcid).strip().upper()
+    return f"PMC{normalized}" if normalized.isdigit() else normalized
+
+
+def _attempt_fulltext(pmcid: str) -> Fulltext:
+    """One GET for *pmcid*, with no retry.
+
+    Unlike search, 429/5xx are not retried: the paper just stays abstract-only.
+    With ``_FULLTEXT_WORKERS`` requests in flight rate limits are likelier, so
+    if "full-text unavailable" logs show them, reuse the search retry loop here.
+    """
+    try:
+        response = requests.get(_FULLTEXT_URL.format(pmcid=pmcid), timeout=30)
+        # Without this a 404 page would come back as if it were the XML.
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        # Never an empty error: ok is "no error", so a message-less exception
+        # would otherwise read as a successful fetch.
+        return Fulltext(
+            pmcid=pmcid, status=status, error=f"{status or type(exc).__name__}: {exc}"
+        )
+    return Fulltext(pmcid=pmcid, xml=response.text, status=response.status_code)
+
+
+def fetch_fulltext(pmcid: str) -> Fulltext:
+    """Fetch the JATS full-text XML for one PMC id, confirming a permanent failure.
+
+    A failed request is returned as a ``Fulltext`` with ``error`` set rather
+    than raised, so one missing full text only leaves its paper abstract-only.
+    A permanent status (404, ...) is re-requested once before it is trusted,
+    because Europe PMC sometimes 404s documents that exist.
+
+    :param pmcid: A PMC id in any form (see ``normalize_pmcid``).
+    :return: The XML, or the error that replaced it.
+    :rtype: Fulltext
+    """
+    pmcid = normalize_pmcid(pmcid)
+    result = _attempt_fulltext(pmcid)
+    if not result.ok and result.permanent:
+        time.sleep(_PERMANENT_CONFIRM_DELAY_S)
+        result = _attempt_fulltext(pmcid)
+    return result
+
+
+def _get_fulltext_pool() -> ThreadPoolExecutor:
+    """The shared full-text fetch pool, created on first use."""
+    global _fulltext_pool
+    if _fulltext_pool is None:
+        with _fulltext_pool_lock:
+            if _fulltext_pool is None:
+                _fulltext_pool = ThreadPoolExecutor(
+                    max_workers=_FULLTEXT_WORKERS, thread_name_prefix="epmc-ft"
+                )
+    return _fulltext_pool
+
+
+def fetch_fulltext_many(pmcids: Iterable[str]) -> Dict[str, Fulltext]:
+    """Fetch several full texts concurrently, keyed by normalised PMC id.
+
+    Blank ids are dropped and repeats are fetched once. All callers share
+    ``_FULLTEXT_WORKERS`` slots, so the sub-query fan-out cannot multiply into a
+    burst against Europe PMC.
+
+    :param pmcids: PMC ids in any form; blanks are dropped.
+    :type pmcids: Iterable[str]
+    :return: One ``Fulltext`` per distinct id, successes and failures alike.
+    :rtype: Dict[str, Fulltext]
+    """
+    unique = list(
+        dict.fromkeys(normalize_pmcid(p) for p in pmcids if str(p or "").strip())
+    )
+    return {r.pmcid: r for r in _get_fulltext_pool().map(fetch_fulltext, unique)}
+
+
+class LiteratureSource(Protocol):
+    """What ``LibrarianAgent`` needs from a literature backend.
+
+    ``search`` returns up to ``page_size`` paper dicts in the shape
+    ``_parse_result`` builds. The agent reads ``inEPMC``, ``hasFreeFullText``,
+    ``fullTextIds``, ``pmcid``, ``pmid``, ``epmcId``,
+    ``epmcSource``/``sourceCode``, ``doi``, ``title``, ``authors``,
+    ``journal``, ``year``, ``url``, ``abstract`` and
+    ``authorsWithAffiliations``. It must raise on failure, never return ``[]``
+    for an outage: the agent lets the exception fail the run, so a caller can
+    tell "the search broke" from "no literature found".
+
+    ``fetch_fulltext_many`` is called once per sub-query with one id per paper,
+    already normalised (``normalize_pmcid``), or ``""`` for a paper that is not
+    open access. Drop the blanks and return one entry per distinct remaining
+    id, keyed by that id. The agent only reads each value's ``ok``, ``xml``
+    and ``error``, so any object with those attributes will do.
+    """
+
+    def search(self, query: str, page_size: int) -> List[Dict[str, Any]]:
+        """Run one literature query; return its paper dicts."""
+        ...
+
+    def fetch_fulltext_many(self, pmcids: Iterable[str]) -> Dict[str, Fulltext]:
+        """Fetch the full texts for a batch of PMC ids."""
+        ...
+
+
+class EuropePmcSource:
+    """Default source: plain Europe PMC REST calls, no cache."""
+
+    def search(self, query: str, page_size: int) -> List[Dict[str, Any]]:
+        """Search Europe PMC (see ``search_scientific_literature_structured``)."""
+        return search_scientific_literature_structured(query, page_size=page_size)
+
+    def fetch_fulltext_many(self, pmcids: Iterable[str]) -> Dict[str, Fulltext]:
+        """Fetch full texts concurrently (see ``fetch_fulltext_many``)."""
+        return fetch_fulltext_many(pmcids)
 
 
 if __name__ == "__main__":

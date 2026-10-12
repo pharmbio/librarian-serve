@@ -7,8 +7,9 @@
 .agents/
 .claude-plugin/
 .codex-plugin/
+.github/
 assets/
-data/
+evals/
 skills/
 tests/
 **/.env*

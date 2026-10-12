@@ -11,3 +11,24 @@ venv/
 # raw screen recordings; README uses the GIFs
 assets/*.mov
 assets/*.mp4
+ADAPTION.md
+
+evals/Literature/results/
+evals/Literature/results_paper/
+evals/Literature/.envs/
+evals/Literature/SQA_bench/code/
+evals/Literature/SQA_bench/output/
+evals/Literature/SQA_bench/data/*
+!evals/Literature/SQA_bench/data/*/
+evals/Literature/SQA_bench/data/*/*
+!evals/Literature/SQA_bench/data/*/*_ids.txt
+# ProClaim: a pinned, pristine clone. Its two claim sets arrive with it, at
+# ProClaim_src/datasets/, and are read straight from there.
+evals/Literature/ProClaim/ProClaim_src/
+evals/Literature/ProClaim/data/
+# AstaBench: a pinned, pristine clone. LitQA2's 91-question split is rebuilt on
+# first use from the Hub; the committed id list beside it is what pins it.
+evals/Literature/AstaBench/vendor/
+evals/Literature/AstaBench/data/*/*
+!evals/Literature/AstaBench/data/*/*_ids.txt
+ADAPTION.md
