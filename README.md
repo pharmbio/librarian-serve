@@ -1,19 +1,15 @@
 # A hosted instance of EMBL's Librarian at SciLifeLab Serve
 
-> [!IMPORTANT]
-> This is a private repository. I did not make a fork or a branch because I was not sure that is what we want at the end. It will be made public later.
-
-> Our goal is to host an instance of EBML's Librarian on SciLifeLab Serve platform, with our locally hosted LLM and a user-friendly interface.
-
+A hosted instance of EBML's Librarian on SciLifeLab Serve platform, with our locally hosted LLM and a user-friendly interface.
 
 ## Overview
 
-Starting from the original Librarian repository, we built 3 services, with one per dir. Each of the 3 has its own `Dockerfile` and runs as a container of its own. They talk to each other only through their API (see figure below).
+Starting from the original [Librarian repository](https://github.com/petroni-lab/librarian/), we built 3 services. Each of the 3 has its own `Dockerfile` and runs as a container of its own. They talk to each other only through their API (see the table and figure below).
 
 | Part | Folder | Port | Role |
 |---|---|---|---|
-| **app** | `app/` | 8080 | The web UI (login, questions, history) and the API it calls. Sends questions to librarian and stores everything in the database. |
-| **librarian** | `librarian/` | 7680 | The EMBL's Librarian, unchanged |
+| **app** | `app/` | 8080 | The web UI (login, conversations, history) and the API it calls. Sends each question, with the conversation so far, to librarian and stores everything in the database. |
+| **librarian** | `librarian/` | 7680 | The EMBL's Librarian (v1.0, with multi-turn support), unchanged, behind a small HTTP API (`orchestrator.py`). |
 | **supabase** | `postgres-db/` | 9876 | Self-hosted Supabase of both dashboard Studio and database. The app reaches its tables through the REST API, on the same port as Studio. |
 
 
@@ -55,7 +51,7 @@ cp app/.env.example app/.env
 
 - **Supabase:** in `postgres-db/.env`, set `DASHBOARD_USERNAME` (your Studio login name). `generate-keys.sh` has already set `DASHBOARD_PASSWORD`, `POSTGRES_PASSWORD` and the rest.
 - **API keys:** set `API_KEY` in `librarian/.env` and the same value as `LIBRARIAN_API_KEY` in `app/.env`. Generate it with `openssl rand -hex 32`.
-- **LLM:** set `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` in `librarian/.env`.
+- **LLM:** set `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` in `librarian/.env`. Optionally set `LIBRARIAN_CACHE_DIR` to cache full texts on disk: follow-ups often read the same papers again.
 - **Database:** paste the two lines that `librarian-key.sh` printed, `SUPABASE_ANON_KEY` and `SUPABASE_LIBRARIAN_KEY`, into `app/.env`. `SUPABASE_URL` there is already the gateway, as the app's container sees it:
 
   ```bash
@@ -67,8 +63,8 @@ cp app/.env.example app/.env
 
 ```bash
 docker build -t librarian-supabase:latest postgres-db/
-docker build -t librarian:latest librarian/
-docker build -t librarian-app:latest app/
+docker build -t librarian:latest librarian/  
+docker build -t librarian-app:latest app/   
 ```
 
 ### Step 3: Run the containers
@@ -77,7 +73,7 @@ Each in a terminal of its own:
 
 ```bash
 docker run --rm -it -p 9876:9876 --env-file postgres-db/.env librarian-supabase:latest
-docker run --rm -it -p 7680:7680 --env-file librarian/.env librarian:latest
+docker run --rm -it -p 7680:7680 --env-file librarian/.env librarian:latest   
 docker run --rm -it -p 8080:8080 --env-file app/.env librarian-app:latest
 ```
 
@@ -92,6 +88,30 @@ Note: Ctrl+C stops a container, and `--rm` then deletes it, with its data.
 
 ---
 # Optional reading
+## Conversations mode
+
+A question starts a conversation, and the user can then ask follow-ups beneath the answer. Each question is one **turn**:
+
+1. The app sends the librarian the question and **the last 3 answered turns** of the conversation.
+2. The librarian's router reads them and either
+   - **searches**: it rewrites a follow-up into a standalone question ("And in rats?" becomes "metformin extends lifespan in rats"), searches Europe PMC and writes a cited answer.
+   - **replies** from the conversation alone, when it already holds the answer: a detail of an earlier answer, a paper it cited, a definition. A reply takes seconds and searches nothing.
+3. The app saves the turn in the conversation. A failed turn is kept out of the conversation and out of what the next turn sees.
+
+In the UI, each follow-up shows how it was answered ("Searched for …" or "Answered from the conversation"). The evidence column shows one turn's papers at a time: pick the turn there, or click its "N papers". A citation in any answer, a reply's included, jumps to the paper in the turn that found it.
+
+The librarian's API (`POST /api/v1/process/stream`, and `/api/v1/process` without streaming) takes:
+
+```json
+{"query": "And in rats?",
+ "conversation_history": [{"role": "user", "content": "Does metformin extend lifespan in mice?"},
+                          {"role": "assistant", "content": "## Executive Summary ..."}]}
+```
+
+and streams `progress`, `route` (`{action: "search" | "reply", query, language}`), then on a search `queries` and `evidence`, and finally `result` (`{action, answer, query, language, evidence}`) or `error`, then `done`.
+
+In the database, a conversation holds queries (the questions), and each query holds its run (the answer; `runs.action` says whether it searched or replied). `postgres-db/config/librarian/0002_conversations.sql` adds them, and turns every question already stored into a conversation of its own, so the existing history and its links keep working.
+
 ## Details on Supabase container
 
 `postgres-db/` runs the 11 services of Supabase's
@@ -201,5 +221,3 @@ both containers.
 If `supabase` stops at once with `Not set: …`, the container was started
 without those settings: pass `--env-file postgres-db/.env`, or set them on the
 platform.
-
-
