@@ -133,7 +133,7 @@ class LLMClient:
         messages: List[dict],
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
-        timeout: int = 180,
+        timeout: int = 1200,
     ) -> str:
         """Send one chat completion and return the assistant's text.
 
