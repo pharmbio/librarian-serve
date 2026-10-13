@@ -11,6 +11,10 @@ env vars — nothing else to configure:
                          reasoning models (GLM-5.3+, etc). Servers that don't
                          recognize the field reject it once with a 400; the
                          client drops it and retries automatically.
+    LLM_ENABLE_THINKING  optional; "false" sends ``chat_template_kwargs:
+                         {"enable_thinking": false}`` to switch off the hidden
+                         thinking phase of hybrid models (Qwen3, etc.) on
+                         vLLM/SGLang. Unset means don't send it.
 """
 
 import json
@@ -70,6 +74,11 @@ class LLMClient:
         self.model_name = model_name or os.getenv("LLM_MODEL")
         # Reasoning-model effort level (e.g. "low"); unset means don't send it.
         self.reasoning_effort = os.getenv("LLM_REASONING_EFFORT")
+        # Hybrid-model thinking switch (True/False); None means don't send it.
+        thinking = os.getenv("LLM_ENABLE_THINKING", "").strip().lower()
+        self.enable_thinking = (
+            thinking not in ("0", "false", "no", "off") if thinking else None
+        )
 
         # Optional sampling parameters this endpoint has rejected with a 400.
         self._unsupported: set = set()
@@ -79,6 +88,8 @@ class LLMClient:
             if self.reasoning_effort
             else ""
         )
+        if self.enable_thinking is not None:
+            effort_note += f" enable_thinking={self.enable_thinking}"
         print(f"LLMClient -> url={self.base_url} model={self.model_name}{effort_note}")
 
     def _url(self) -> str:
@@ -137,6 +148,10 @@ class LLMClient:
             optional["max_tokens"] = int(max_tokens)
         if self.reasoning_effort:
             optional["reasoning_effort"] = self.reasoning_effort
+        if self.enable_thinking is not None:
+            optional["chat_template_kwargs"] = {
+                "enable_thinking": self.enable_thinking
+            }
 
         last_exception = None
         for attempt in range(self.MAX_RETRIES):
