@@ -174,6 +174,16 @@ def test_runs_always_read_full_text(client, fake_db, fake_librarian):
     assert query["full_text_enrichment"] is True
 
 
+def test_supplementary_is_passed_on_not_stored(client, fake_db, fake_librarian):
+    register(client)
+    client.post("/run-agent", json={"query": "q"})
+    assert fake_librarian.supplementary_enrichment is False  # off unless asked for
+    for choice in (True, False):
+        client.post("/run-agent", json={"query": "q", "supplementary_enrichment": choice})
+        assert fake_librarian.supplementary_enrichment is choice
+    assert all("supplementary_enrichment" not in query for query in fake_db.queries.values())
+
+
 def test_runs_need_a_session(client):
     assert client.post("/run-agent/stream", json={"query": "q"}).status_code == 401
 

@@ -151,12 +151,15 @@ class FakeLibrarian:
         self.calls = 0
         self.action = "search"
         self.full_text_enrichment = None
+        self.supplementary_enrichment = None  # not asked yet
         self.history = None
 
     def run(self, query, full_text_enrichment=True, conversation_history=None,
+            supplementary_enrichment=False,
             on_progress=None, on_route=None, on_queries=None, on_evidence=None):
         self.calls += 1
         self.full_text_enrichment = full_text_enrichment
+        self.supplementary_enrichment = supplementary_enrichment
         self.history = conversation_history
         if self.error:
             raise self.error

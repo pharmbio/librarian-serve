@@ -139,6 +139,14 @@ def test_librarian_run_relays_progress():
     assert seen == ["Planning", ["q"], {"papers": []}]
 
 
+def test_librarian_sends_the_supplementary_choice():
+    done = b'event: result\ndata: {"answer": "A"}\n\n'
+    for kwargs, expected in (({}, False), ({"supplementary_enrichment": True}, True)):
+        client = librarian_with(response(200, raw=Raw([done])))
+        client.run("q", **kwargs)
+        assert client._session.calls[0][2]["json"]["supplementary_enrichment"] is expected
+
+
 def test_librarian_failures():
     busy = {"detail": "The librarian is busy with other questions. Try again in a minute."}
     with pytest.raises(LibrarianBusy, match="busy with other questions"):

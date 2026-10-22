@@ -53,6 +53,14 @@
       <div id="view"></div>
     </main>
   </div>
+  <!-- A history item's actions. One menu serves every item, placed beside the
+       item's kebab; inside the history list, the list's scrolling would clip it. -->
+  <div class="menu" id="hist-menu" role="menu" aria-label="Conversation actions" hidden>
+    <button type="button" role="menuitem" data-item="markdown" data-icon="download">Download Markdown</button>
+    <button type="button" role="menuitem" data-item="json" data-icon="braces">Download JSON</button>
+    <hr>
+    <button type="button" role="menuitem" class="danger" data-item="delete" data-icon="trash">Delete</button>
+  </div>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

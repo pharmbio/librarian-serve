@@ -252,6 +252,10 @@ class RunRequest(BaseModel):
         default=None,
         description="The conversation this question follows up on; none starts a new one.",
     )
+    supplementary_enrichment: bool = Field(
+        default=False,
+        description="Also search papers' supplementary files (slower). Not stored.",
+    )
 
 
 def _own_conversation(conversation_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
@@ -315,7 +319,11 @@ def _run_for_user(
     started = time.monotonic()
     try:
         result = librarian.run(
-            request.query, FULL_TEXT_ENRICHMENT, conversation_history=history, **callbacks
+            request.query,
+            FULL_TEXT_ENRICHMENT,
+            conversation_history=history,
+            supplementary_enrichment=request.supplementary_enrichment,
+            **callbacks,
         )
     except Exception as exc:
         _record_failure(run_id, exc, started)

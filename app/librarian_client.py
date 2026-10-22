@@ -36,6 +36,7 @@ class LibrarianClient:
         query: str,
         full_text_enrichment: bool = True,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        supplementary_enrichment: bool = False,
         on_progress: Optional[Callable[[str], None]] = None,
         on_route: Optional[Callable[[Dict[str, str]], None]] = None,
         on_queries: Optional[Callable[[List[str]], None]] = None,
@@ -46,6 +47,8 @@ class LibrarianClient:
 
         :param conversation_history: The earlier turns, oldest first, as
             ``{"role": "user" | "assistant", "content": ...}``.
+        :param supplementary_enrichment: Whether to search papers'
+            supplementary files too.
         :param on_progress: Called with a short status string at each stage.
         :param on_route: Called with ``{action, query, language}`` once the
             librarian has decided to search (``query`` is then the standalone
@@ -58,7 +61,10 @@ class LibrarianClient:
         :raises LibrarianError: if it failed to answer this one.
         :raises ServiceUnavailable: if it is down or stops responding.
         """
-        for event, payload in self._events(query, full_text_enrichment, conversation_history or []):
+        events = self._events(
+            query, full_text_enrichment, conversation_history or [], supplementary_enrichment
+        )
+        for event, payload in events:
             if event == "progress" and on_progress:
                 on_progress(payload["message"])
             elif event == "route" and on_route:
@@ -76,7 +82,11 @@ class LibrarianClient:
         )
 
     def _events(
-        self, query: str, full_text_enrichment: bool, conversation_history: List[Dict[str, str]]
+        self,
+        query: str,
+        full_text_enrichment: bool,
+        conversation_history: List[Dict[str, str]],
+        supplementary_enrichment: bool = False,
     ) -> Iterator[Tuple[str, Any]]:
         """The run's Server-Sent Events as ``(event, payload)`` pairs.
 
@@ -88,6 +98,7 @@ class LibrarianClient:
             "query": query,
             "full_text_enrichment": full_text_enrichment,
             "conversation_history": conversation_history,
+            "supplementary_enrichment": supplementary_enrichment,
         }
         response = send(
             self._session,

@@ -6,13 +6,11 @@ const MODES = {
   login: {
     title: "Welcome back",
     submit: "Sign in",
-    hint: "Passwords are stored as argon2 hashes.",
     autocomplete: "current-password",
   },
   register: {
     title: "Create your account",
     submit: "Create account",
-    hint: "Passwords need at least 8 characters.",
     autocomplete: "new-password",
   },
 };
@@ -81,7 +79,6 @@ function setMode(next) {
   const copy = MODES[mode];
   $("#auth-title").textContent = copy.title;
   $("#auth-submit").textContent = copy.submit;
-  $("#auth-hint").textContent = copy.hint;
   form.elements.password.autocomplete = copy.autocomplete;
   document.querySelectorAll(".register-only").forEach((field) => (field.hidden = mode !== "register"));
   checkConfirm(); // the password may have changed while the field was hidden

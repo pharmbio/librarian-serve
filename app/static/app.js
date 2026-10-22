@@ -54,6 +54,7 @@ const ICONS = {
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>',
   message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   followUp: '<path d="m15 10 5 5-5 5"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
+  more: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
 };
 const icon = (name) => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -68,7 +69,17 @@ const state = {
   citedRefs: new Set(), // "<turn>:<paper index>" of every paper an answer on screen cites
   papers: [], // papers in the evidence column, for re-sorting
   cited: new Set(), // indexes of those papers some answer cites
+  supplementary: readSupplementary(), // whether questions also search supplementary files
 };
+
+// The composer's supplementary switch, as this browser last left it. Off by default.
+function readSupplementary() {
+  try {
+    return localStorage.getItem("supplementary") === "1";
+  } catch {
+    return false;
+  }
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -160,15 +171,33 @@ async function loadConversations() {
   renderHistory();
 }
 
+// One of this account's conversations in full: from the cache, else the server.
+async function fetchConversation(conversationId) {
+  const path = conversationPath(conversationId);
+  if (!state.cache.has(path)) state.cache.set(path, await api(`/api/users/${state.me.id}/conversations/${conversationId}`));
+  return state.cache.get(path);
+}
+
+async function deleteConversation(conversationId, title) {
+  if (!confirm(`Delete “${clip(title, 80)}”, with all its questions and answers, from your history?`)) return;
+  const path = conversationPath(conversationId);
+  await api(`/api/users/${state.me.id}/conversations/${conversationId}`, { method: "DELETE" });
+  state.cache.delete(path);
+  state.drafts.delete(conversationId);
+  await loadConversations();
+  if (location.pathname === path) go("/", { replace: true }); // the conversation's URL is gone, so Back shouldn't return to it
+  toast("Deleted from your history");
+}
+
 // Ask a question: a new conversation's first, or a follow-up in `conversationId`.
 // Stream the run's events from the server and render them as they come. The
 // server keeps going if this page goes away, and the finished turn lands in its
 // conversation either way. `isNew` stays true when retrying a first turn that
 // failed: its conversation has no answer to show yet, so it stays on /.
-async function ask(query, conversationId = null, { isNew = !conversationId } = {}) {
+async function ask(query, conversationId = null, { isNew = !conversationId, supplementary = state.supplementary } = {}) {
   if (state.live && !state.live.finished) return toast("A question is already running.");
   const live = {
-    query, conversationId, isNew, stage: 0, message: "Starting", started: Date.now(),
+    query, conversationId, isNew, supplementary, stage: 0, message: "Starting", started: Date.now(),
     route: null, queries: null, evidence: null, error: null, finished: false,
   };
   state.live = live;
@@ -182,7 +211,7 @@ async function ask(query, conversationId = null, { isNew = !conversationId } = {
     const response = await fetch("/run-agent/stream", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query, conversation_id: conversationId }),
+      body: JSON.stringify({ query, conversation_id: conversationId, supplementary_enrichment: supplementary }),
     });
     if (response.status === 401) return toLogin();
     if (!response.ok) throw new Error(errorText(await response.json().catch(() => ({})), response.status));
@@ -302,6 +331,10 @@ function composerHtml({ followUp }) {
         placeholder="${followUp ? "Ask a follow-up…" : "Ask a biomedical research question…"}"></textarea>
       <div class="composer-bar">
         ${followUp ? '<span class="composer-hint">Follow-ups see the conversation so far.</span>' : ""}
+        <label class="switch" title="Also search the supplementary PDF, Word and Excel files of open-access papers. Slower: a question can take several more minutes.">
+          <input type="checkbox" name="supplementary" role="switch"${state.supplementary ? " checked" : ""}>
+          <span class="track" aria-hidden="true"></span>include Supplementary Docs search
+        </label>
         <button class="btn primary" type="submit">Ask ${icon("arrowUp")}</button>
       </div>
     </form>`;
@@ -316,6 +349,12 @@ function wireComposer(onSubmit, { draftKey = null, focus = true } = {}) {
     box.addEventListener("input", () => state.drafts.set(draftKey, box.value));
   }
   if (focus) box.focus({ preventScroll: true });
+  form.elements.supplementary.addEventListener("change", (event) => {
+    state.supplementary = event.target.checked;
+    try {
+      localStorage.setItem("supplementary", state.supplementary ? "1" : "0");
+    } catch {} // private mode: the choice just won't persist
+  });
   box.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -450,7 +489,7 @@ function liveTurnHtml(live) {
       ? "Answering from the conversation…"
       : live.evidence
       ? "Evidence is in. Writing the answer…"
-      : `Reading open-access full text takes a few minutes. You can leave this page: the answer is saved to ${live.isNew ? "your history" : "this conversation"}.`;
+      : `Reading open-access full text${live.supplementary ? " and supplementary files takes several" : " takes a few"} minutes. You can leave this page: the answer is saved to ${live.isNew ? "your history" : "this conversation"}.`;
   return `${question}${stepsHtml(live)}${rewritten}${live.queries ? searchesHtml(live.queries, true) : ""}
     <div class="panel"><div class="label">Answer</div>${"<div class=skeleton></div>".repeat(4)}<div class="skeleton" style="width:60%"></div>
       <p class="note">${note}</p></div>`;
@@ -585,9 +624,13 @@ function paperCard(paper, i, isCited) {
   ];
   const title = esc(plain(paper.title));
   const venue = [paper.journal, paper.year, paper.affiliation].filter(Boolean).join(" · ");
-  const snippets = paper.evidence_snippets.map(
-    (text) => `<li${text.length > 480 ? ' class="long" title="Click to expand"' : ""}>${esc(plain(text))}</li>`,
-  );
+  // Parallel to the snippets: where each was cited from. Only a supplementary
+  // file is named ("Supplementary: table_s2.xlsx, sheet …"); older runs have none.
+  const sections = paper.evidence_sections ?? [];
+  const snippets = paper.evidence_snippets.map((text, j) => {
+    const source = sections[j]?.startsWith("Supplementary") ? `<span class="source">${esc(sections[j])}</span>` : "";
+    return `<li${text.length > 480 ? ' class="long" title="Click to expand"' : ""}>${source}${esc(plain(text))}</li>`;
+  });
   const ref = `${state.evidenceKey}:${i}`;
   return `<article class="paper${isCited ? " cited" : ""}" id="paper-${state.evidenceKey}-${i}" data-ref="${ref}">
     <div class="paper-top">
@@ -630,14 +673,59 @@ function renderHistory() {
       conversations
         .map((conversation) => {
           const counts = conversation.turn_count > 1 ? `${plural(conversation.turn_count, "question")} · ` : "";
-          return `<a class="hist${location.pathname === conversationPath(conversation.id) ? " active" : ""}" href="${conversationPath(conversation.id)}">
-            <span>${esc(conversation.title)}</span><small>${counts}${plural(conversation.paper_count, "paper")}</small></a>`;
+          return `<div class="hist-row">
+            <a class="hist${location.pathname === conversationPath(conversation.id) ? " active" : ""}" href="${conversationPath(conversation.id)}">
+              <span>${esc(conversation.title)}</span><small>${counts}${plural(conversation.paper_count, "paper")}</small></a>
+            <button class="hist-more" type="button" data-menu="${conversation.id}" title="More" aria-label="More actions for this conversation"
+              aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
+          </div>`;
         })
         .join(""),
   );
   $("#history").innerHTML =
     liveItem + items.join("") ||
     `<p class="empty">${filter ? "No conversations match." : "Your conversations will be kept here."}</p>`;
+  // A running question re-renders the list on every step: keep an open menu by its item.
+  if (menuFor) placeMenu();
+}
+
+// ── History menu ───────────────────────────────────────────────────────────
+
+let menuFor = null; // the id of the conversation whose menu is open
+
+const MENU_ACTIONS = {
+  markdown: async (id) => downloadMarkdown(await fetchConversation(id)),
+  json: async (id) => downloadJson(await fetchConversation(id)),
+  delete: (id) => deleteConversation(id, state.conversations.find((c) => c.id === id)?.title ?? "this conversation"),
+};
+
+function openMenu(button) {
+  closeMenu();
+  menuFor = button.dataset.menu;
+  $("#hist-menu").hidden = false;
+  placeMenu();
+}
+
+// Mark the open menu's kebab, and put the menu under it, or above it when the
+// item is near the bottom of the screen.
+function placeMenu() {
+  const menu = $("#hist-menu");
+  const button = $("#history").querySelector(`[data-menu="${menuFor}"]`);
+  if (!button) return closeMenu(); // its item is gone: deleted, or filtered out
+  button.setAttribute("aria-expanded", "true");
+  button.parentElement.classList.add("menu-open");
+  const box = button.getBoundingClientRect();
+  const below = box.bottom + 4 + menu.offsetHeight <= innerHeight - 8;
+  menu.style.top = `${below ? box.bottom + 4 : box.top - 4 - menu.offsetHeight}px`;
+  menu.style.left = `${Math.max(8, box.right - menu.offsetWidth)}px`;
+}
+
+function closeMenu() {
+  if (!menuFor) return;
+  menuFor = null;
+  $("#hist-menu").hidden = true;
+  $("#history").querySelectorAll(".menu-open").forEach((row) => row.classList.remove("menu-open"));
+  $("#history").querySelectorAll('[aria-expanded="true"]').forEach((button) => button.setAttribute("aria-expanded", "false"));
 }
 
 // Jump to a cited paper, switching the evidence column to the turn that found it.
@@ -671,28 +759,30 @@ function toMarkdown(conversation) {
       lines.push(`${h(3)} [${paper.citation_key}] ${plain(paper.title)}`, "");
       lines.push([paper.authors, [paper.journal, paper.year].filter(Boolean).join(" "), ...ids].filter(Boolean).join(" · "));
       if (paper.url) lines.push(paper.url);
-      lines.push("", ...paper.evidence_snippets.flatMap((text) => [`> ${plain(text)}`, ""]));
+      const sections = paper.evidence_sections ?? [];
+      lines.push("", ...paper.evidence_snippets.flatMap((text, j) => [
+        sections[j]?.startsWith("Supplementary") ? `> *${plain(sections[j])}*\n>\n> ${plain(text)}` : `> ${plain(text)}`,
+        "",
+      ]));
     }
   }
   return lines.join("\n");
 }
 
+const downloadMarkdown = (conversation) => download(`${slug(conversation.title)}.md`, toMarkdown(conversation), "text/markdown");
+const downloadJson = (conversation) =>
+  download(`${slug(conversation.title)}.json`, JSON.stringify(conversation, null, 2), "application/json");
+
 const ACTIONS = {
-  retry: () => ask(state.live.query, state.live.conversationId, { isNew: state.live.isNew }),
+  retry: () =>
+    ask(state.live.query, state.live.conversationId, { isNew: state.live.isNew, supplementary: state.live.supplementary }),
   copy: async (button) => {
     await navigator.clipboard.writeText(state.shown.turns[button.dataset.turn].answer);
     toast("Answer copied as Markdown");
   },
-  markdown: () => download(`${slug(state.shown.title)}.md`, toMarkdown(state.shown), "text/markdown"),
-  json: () => download(`${slug(state.shown.title)}.json`, JSON.stringify(state.shown, null, 2), "application/json"),
-  delete: async () => {
-    if (!confirm("Delete this conversation, with all its questions and answers, from your history?")) return;
-    await api(`/api/users/${state.me.id}/conversations/${state.shown.id}`, { method: "DELETE" });
-    state.cache.delete(conversationPath(state.shown.id));
-    await loadConversations();
-    go("/", { replace: true }); // the conversation's URL is gone, so Back shouldn't return to it
-    toast("Deleted from your history");
-  },
+  markdown: () => downloadMarkdown(state.shown),
+  json: () => downloadJson(state.shown),
+  delete: () => deleteConversation(state.shown.id, state.shown.title),
 };
 
 // ── Wiring ─────────────────────────────────────────────────────────────────
@@ -726,6 +816,42 @@ async function boot() {
     go(link.getAttribute("href"), { live: link.hasAttribute("data-live") });
   });
   $("#history-filter").addEventListener("input", renderHistory);
+
+  // A history item's kebab opens its menu; a click anywhere else, Escape, or
+  // the list scrolling closes it.
+  const menu = $("#hist-menu");
+  $("#history").addEventListener("click", (event) => {
+    const button = event.target.closest(".hist-more");
+    if (!button) return;
+    if (menuFor === button.dataset.menu) return closeMenu();
+    openMenu(button);
+    if (event.detail === 0) menu.querySelector("button").focus(); // opened from the keyboard
+  });
+  menu.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-item]");
+    if (!item) return;
+    const id = menuFor;
+    closeMenu();
+    Promise.resolve(MENU_ACTIONS[item.dataset.item](id)).catch((error) => toast(error.message));
+  });
+  menu.addEventListener("keydown", (event) => {
+    const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const items = [...menu.querySelectorAll("button")];
+    items[(Math.max(0, items.indexOf(document.activeElement)) + step + items.length) % items.length].focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (menuFor && !event.target.closest("#hist-menu, .hist-more")) closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !menuFor) return;
+    const button = $("#history").querySelector(`[data-menu="${menuFor}"]`);
+    closeMenu();
+    button?.focus();
+  });
+  $("#history").addEventListener("scroll", closeMenu);
+  window.addEventListener("resize", closeMenu);
   $("#menu").addEventListener("click", () => document.body.classList.add("nav-open"));
   $("#scrim").addEventListener("click", () => document.body.classList.remove("nav-open"));
   $("#logout").addEventListener("click", async () => {

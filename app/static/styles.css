@@ -132,6 +132,36 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .hist small { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 12px; }
 .hist.live small { color: var(--accent); font-weight: 500; }
+/* A saved conversation's item has a kebab at its right, shown while the item is
+   hovered or focused, or its menu is open. The item keeps room for it, so the
+   title doesn't re-wrap when it appears. Touch screens can't hover: always shown. */
+.hist-row { position: relative; }
+.hist-row .hist { padding-right: 36px; }
+.hist-row:hover .hist:not(.active), .hist-row.menu-open .hist:not(.active) { background: var(--surface-2); }
+.hist-more {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+  width: 28px; height: 28px; display: grid; place-items: center; padding: 0;
+  border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer;
+  opacity: 0; transition: opacity .1s, background .15s, color .15s;
+}
+.hist-row:hover .hist-more, .hist-row:focus-within .hist-more, .hist-row.menu-open .hist-more { opacity: 1; }
+.hist-more:hover, .hist-row.menu-open .hist-more { background: var(--border); color: var(--text); }
+@media (hover: none) { .hist-more { opacity: 1; } }
+
+.menu {
+  position: fixed; z-index: 40; min-width: 200px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 4px 10px rgb(0 0 0 / 8%), 0 12px 32px rgb(0 0 0 / 12%);
+}
+.menu button {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px;
+  border: 0; border-radius: 8px; background: transparent; font-size: 13.5px; text-align: left; cursor: pointer;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--surface-2); outline: none; }
+.menu .i { color: var(--muted); }
+.menu .danger, .menu .danger .i { color: var(--danger); }
+.menu .danger:hover, .menu .danger:focus-visible { background: var(--danger-soft); }
+.menu hr { margin: 5px 4px; border: 0; border-top: 1px solid var(--border); }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 .empty { color: var(--faint); font-size: 13.5px; padding: 12px 8px; margin: 0; }
 
@@ -237,6 +267,20 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .composer.follow::after { content: ""; position: absolute; left: -1px; right: -1px; top: 100%; height: 15px; background: var(--bg); }
 .composer.follow textarea { min-height: 48px; font-size: 16px; }
 .composer-hint { margin-right: auto; color: var(--faint); font-size: 12.5px; }
+.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track {
+  position: relative; width: 30px; height: 18px; flex: none; border-radius: 999px;
+  background: var(--border-strong); transition: background .15s;
+}
+.switch .track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / 20%); transition: transform .15s;
+}
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(12px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch:has(input:checked) { color: var(--text); }
 .follow-ups { margin-top: -18px; }
 
 .steps {
@@ -341,6 +385,10 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .snippets li.long { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
 .snippets li.long.open { display: block; }
+.snippets .source {
+  display: block; margin-bottom: 4px; color: var(--accent); font-family: var(--sans);
+  font-size: 11.5px; font-weight: 500; overflow-wrap: anywhere;
+}
 .links { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12.5px; }
 .links a { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
 .links a:hover { color: var(--accent); }
