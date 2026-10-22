@@ -7,8 +7,8 @@ to ``CliClient`` (``search.py``), which hands it to ``LibrarianAgent`` as an LLM
 from __future__ import annotations
 
 import functools
-import os
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -16,7 +16,6 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 
 PROVIDERS = ("claude", "codex", "antigravity")
 
@@ -59,17 +58,51 @@ _FALLBACK_PATHS = {
 }
 
 
+def _find_cli(command: str) -> Optional[str]:
+    executable = shutil.which(command)
+    # Python 3.10/3.11 do not apply PATHEXT when given a full path.
+    if executable is None and os.name == "nt" and os.path.dirname(command) and not os.path.splitext(command)[1]:
+        for extension in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";"):
+            executable = shutil.which(command + extension.lower())
+            if executable:
+                break
+    return executable
+
+
 def _require_cli(provider: str) -> str:
     """Return the installed CLI executable or stop with an actionable error."""
     cli = "agy" if provider == "antigravity" else provider
-    executable = shutil.which(cli)
+    override = os.environ.get("LIBRARIAN_CLI_PATH", "").strip()
+    if override:
+        executable = _find_cli(str(Path(override).expanduser()))
+        if executable:
+            return executable
+        raise CliSessionError(f"LIBRARIAN_CLI_PATH does not name an executable: {override}")
+    executable = _find_cli(cli)
     if executable is not None:
         return executable
+    if provider == "claude":
+        bundled = os.environ.get("CLAUDE_CODE_EXECPATH", "").strip()
+        if bundled:
+            executable = _find_cli(bundled)
+            if executable:
+                return executable
+    if provider == "antigravity" and os.environ.get("LOCALAPPDATA"):
+        executable = _find_cli(str(Path(os.environ["LOCALAPPDATA"]) / "agy" / "bin" / "agy"))
+        if executable:
+            return executable
     for candidate in _FALLBACK_PATHS[cli]:
-        path = Path(candidate).expanduser()
-        if os.access(path, os.X_OK):
-            return str(path)
-    raise CliSessionError(f"{provider} CLI ({cli}) is not installed or not on PATH.")
+        # which also checks Windows PATHEXT (.exe/.cmd) for full paths.
+        executable = _find_cli(str(Path(candidate).expanduser()))
+        if executable:
+            return executable
+    raise CliSessionError(
+        f"{provider} CLI ({cli}) is not installed or not on PATH. "
+        "Calling agent: follow SKILL.md setup recovery. Locate or install this CLI "
+        "through the host's normal permission flow, set LIBRARIAN_CLI_PATH if needed, "
+        "and retry. If the user did not choose a provider, you may announce and try "
+        "one installed alternative with --provider."
+    )
 
 
 def _claude_command(executable: str) -> List[str]:
@@ -217,9 +250,16 @@ def _codex_environment(runtime_path: Path) -> Dict[str, str]:
     ):
         source = source_home / filename
         target = codex_home / filename
-        if source.exists() and source.resolve() != target.resolve():
-            shutil.copy2(source, target)
-            target.chmod(0o600)
+        try:
+            if source.exists() and source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+                target.chmod(0o600)
+        except OSError as error:
+            raise CliSessionError(
+                f"Codex authentication/policy cache could not be read or copied: {error}. "
+                "Calling agent: request approved file access through the host's normal "
+                "permission flow, then retry the search."
+            ) from None
     environment = os.environ.copy()
     environment["CODEX_HOME"] = str(codex_home)
     return environment
@@ -249,6 +289,7 @@ def _run_command(
                 capture_output=True,
                 env=environment,
                 text=True,
+                encoding="utf-8",
                 check=False,
                 timeout=timeout,
             )
@@ -259,6 +300,8 @@ def _run_command(
                 "Check model-provider connectivity and retry with approved network "
                 "access. Do not keep waiting or fall back to web search."
             ) from None
+        except OSError as error:
+            raise CliSessionError(f"Could not start provider CLI: {error}") from None
 
 
 def _antigravity_response(raw_output: str) -> str:
@@ -355,6 +398,21 @@ def run_direct_session(provider: str, prompt_path: Path, timeout: float = 180) -
                 if response_path.exists()
                 else ""
             )
+    # Every requested reply is a JSON object, while the CLI's sign-in error is a
+    # plain line, so stdout without "{" is a CLI message, not model output.
+    cli_stdout = "" if "{" in completed.stdout else completed.stdout
+    diagnostics = completed.stderr + "\n" + cli_stdout
+    if provider == "claude" and any(
+        marker in diagnostics.lower()
+        for marker in ("not logged in", "please run /login", "authentication required")
+    ):
+        raise CliSessionError(
+            "The Claude CLI used by Librarian is not signed in. "
+            "Calling agent: apply SKILL.md authentication recovery. If sign-in is "
+            f"required, launch \"{executable}\" in a host terminal when available, "
+            "ask the user only to complete /login, then resume the search. "
+            "The desktop app's login may not authenticate a separate child CLI."
+        )
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip()
         raise CliSessionError(f"{provider} session failed: {message}")

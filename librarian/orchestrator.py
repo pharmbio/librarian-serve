@@ -1,7 +1,7 @@
 """HTTP API for the librarian agent.
 
     GET  /health                   liveness probe
-    POST /api/v1/process           blocking run: {action, answer, query, language, evidence}
+    POST /api/v1/process           blocking run: {action, answer, query, language, stopped, evidence}
     POST /api/v1/process/stream    the same run as Server-Sent Events (live progress)
 
 A run is one turn of a conversation. The request carries the question and,
@@ -9,6 +9,10 @@ optionally, the conversation so far; a router reads both and either searches
 Europe PMC and writes a cited answer, or replies from the conversation alone
 when it already holds the answer (a detail of an earlier answer, a definition).
 A follow-up such as "broaden it" is rewritten into a standalone search first.
+
+With LIBRARIAN_SCOPE_GUARD on, each question is first checked against the
+library's list of accepted questions (prompts/scope.md): one it does not accept
+gets a one-sentence redirect instead, sent as a "reply" with "stopped": true.
 
 The service is stateless: no accounts, no database, no web UI. The app service
 (../app) keeps the conversations, sends each turn with the ones before it and
@@ -23,6 +27,7 @@ import os
 import queue
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional
 
 from dotenv import load_dotenv
@@ -31,17 +36,39 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
-from librarian import LibrarianAgent, SynthesisAgent, load_runtime_config
+from librarian import (
+    LibrarianAgent,
+    RunResult,
+    SynthesisAgent,
+    ZeroShotScopeGuard,
+    load_runtime_config,
+)
 from librarian.citations import citation_keys
+from librarian.scope_port import ScopeVerdict
 
 
 load_dotenv()
+
+
+def _env_flag(name: str) -> Optional[bool]:
+    """A true/false setting from the environment; None when unset or blank."""
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return None
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be true or false, got {value!r}.")
 
 
 RUNTIME_CONFIG = load_runtime_config()
 
 API_KEY = os.getenv("API_KEY", "")
 MAX_CONCURRENT_RUNS = int(os.getenv("LIBRARIAN_MAX_CONCURRENT_RUNS", "2"))
+# One extra LLM call per turn, before anything else, that turns away questions
+# outside scientific research. Off unless set.
+SCOPE_GUARD = bool(_env_flag("LIBRARIAN_SCOPE_GUARD"))
 # A stream with nothing to report for this long gets a keep-alive comment:
 # some stages run for minutes, and proxies close connections that look idle.
 HEARTBEAT_S = 15.0
@@ -94,6 +121,14 @@ class RunRequest(BaseModel):
         default=True,
         description="Rank over full-text paragraphs; false falls back to abstracts only.",
     )
+    supplementary_enrichment: bool = Field(
+        default=False,
+        description=(
+            "EXPERIMENTAL: also rank paragraphs from each open-access paper's "
+            "supplementary PDF / Word / Excel files (slower). The app's UI sets it "
+            "per question."
+        ),
+    )
     conversation_history: List[Message] = Field(
         default_factory=list,
         max_length=50,
@@ -104,15 +139,37 @@ class RunRequest(BaseModel):
     )
 
 
+class WebLibrarianAgent(LibrarianAgent):
+    """``LibrarianAgent`` reporting its Europe PMC sub-queries once they exist.
+
+    :param on_queries: Called with the validated sub-queries, just before
+        Stage 2 searches them.
+    """
+
+    def __init__(
+        self, *, on_queries: Optional[Callable[[List[str]], None]] = None, **kwargs: Any
+    ) -> None:
+        super().__init__(**kwargs)
+        self._on_queries = on_queries
+
+    def _validate_queries(self, queries: List[str]) -> List[str]:
+        # What this returns is what run() searches and records as search_queries.
+        validated = super()._validate_queries(queries)
+        if self._on_queries:
+            self._on_queries(validated)
+        return validated
+
+
 class WebSynthesisAgent(SynthesisAgent):
     """``SynthesisAgent`` writing Markdown for the web UI, reporting each step.
 
     :param on_route: Called with ``{action, query, language}`` once the router
-        has decided between searching and replying.
+        has decided between searching and replying, or once the scope guard
+        has turned the question away (as a ``reply``).
     :param on_evidence: Called with the evidence as soon as retrieval ends, so a
         client can show it while the answer is still being written.
-    :param on_progress: Called with ``"Writing a cited answer"`` once the
-        evidence is in.
+    :param on_progress: Called with a short status string before the scope
+        check and once the evidence is in.
     """
 
     def __init__(
@@ -130,6 +187,18 @@ class WebSynthesisAgent(SynthesisAgent):
 
     def _output_formatting(self, output_channel: Optional[str]) -> tuple[str, str]:
         return "web", WEB_FORMATTING_GUIDANCE
+
+    def _check_scope(
+        self, query: str, conversation_history: Optional[List[Dict[str, str]]]
+    ) -> ScopeVerdict:
+        if self._on_progress:
+            self._on_progress("Checking the question")
+        verdict = super()._check_scope(query, conversation_history)
+        # A refused question gets the guard's reply and nothing else runs, so
+        # _route never reports: say here that the turn is a reply.
+        if not verdict.in_scope and self._on_route:
+            self._on_route({"action": "reply", "query": query, "language": ""})
+        return verdict
 
     def _route(
         self, query: str, conversation_history: Optional[List[Dict[str, str]]] = None
@@ -156,23 +225,23 @@ class WebSynthesisAgent(SynthesisAgent):
         max_loops: int = 1,
         on_progress: Optional[Callable[[str], None]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
-    ) -> List[Dict[str, Any]]:
-        papers = super()._retrieve(query, max_loops, on_progress, progress_callback)
+    ) -> RunResult:
+        retrieval = super()._retrieve(query, max_loops, on_progress, progress_callback)
         # The same keys the summarizer puts on each paper's "Cite as:" line, so
         # the UI can link each inline citation back to its evidence.
-        for key, paper in zip(citation_keys(papers), papers):
+        for key, paper in zip(citation_keys(retrieval.papers), retrieval.papers):
             paper["citation_key"] = key
         if self._on_evidence:
             self._on_evidence(
                 {
                     "query": query,
-                    "search_queries": self.librarian.last_run_debug.get("search_queries", []),
-                    "papers": papers,
+                    "search_queries": retrieval.debug.get("search_queries", []),
+                    "papers": retrieval.papers,
                 }
             )
         if self._on_progress:
             self._on_progress("Writing a cited answer")
-        return papers
+        return retrieval
 
 
 def _run(
@@ -193,46 +262,49 @@ def _run(
     :param on_evidence: Called with the evidence as soon as retrieval ends.
         Not called on a reply, which searches nothing.
     :returns: ``{"action": "search" | "reply", "answer": markdown, "query",
-        "language", "evidence": {query, search_queries, papers}}``. ``query``
-        is the standalone question the router resolved; ``papers`` is
-        ``LibrarianAgent.run``'s output, each paper tagged with the
-        ``citation_key`` that the answer cites it by, and empty on a reply.
+        "language", "stopped", "evidence": {query, search_queries, papers}}``.
+        ``query`` is the standalone question the router resolved; ``stopped``
+        is true when the scope guard turned the question away (then also a
+        ``reply``); ``papers`` is ``LibrarianAgent.run(...).papers``, each
+        paper tagged with the ``citation_key`` that the answer cites it by,
+        and empty on a reply.
     """
+    # The request decides, not config.toml: the UI's switch is the only control.
+    config = replace(RUNTIME_CONFIG, supplementary_enrichment=request.supplementary_enrichment)
     # ponytail: fresh agents per request. Construction just reads prompt files
     # and builds an HTTP client; cache them in module globals if profiling ever
     # says otherwise.
-    agent = LibrarianAgent(
-        runtime_config=RUNTIME_CONFIG,
+    agent = WebLibrarianAgent(
+        runtime_config=config,
         full_text_enrichment=request.full_text_enrichment,
+        on_queries=on_queries,
     )
     synthesis = WebSynthesisAgent(
         librarian=agent,
+        scope_guard=ZeroShotScopeGuard() if SCOPE_GUARD else None,
         on_route=on_route,
         on_evidence=on_evidence,
         on_progress=on_progress,
     )
 
-    def step(number: int) -> None:
-        # Step 1: the agent has just validated its sub-queries and is about to
-        # search them, so this is the first moment they exist.
-        if number == 1 and on_queries:
-            on_queries(agent.last_run_debug["search_queries"])
-
     history = [message.model_dump() for message in request.conversation_history]
     if on_progress:
         on_progress("Reading the conversation" if history else "Reading the question")
-    answer = synthesis.run(
+    result = synthesis.run(
         request.query,
         conversation_history=history,
         on_progress=on_progress,
-        progress_callback=step,
     )
-    debug = synthesis.last_run_debug
+    debug = result.debug
+    stopped = debug["action"] == "stopped"
     return {
-        "action": debug["action"],
-        "answer": answer,
+        # The app stores "search" or "reply" only: a turned-away question
+        # searched nothing, so it is a reply.
+        "action": "reply" if stopped else debug["action"],
+        "answer": result.answer,
         "query": debug["query"],
         "language": debug["language"],
+        "stopped": stopped,
         "evidence": {
             "query": debug["query"],
             "search_queries": debug["search_queries"],
@@ -263,10 +335,11 @@ def _stream(
     The agent is blocking and reports progress through callbacks, so the thread
     pushes the callbacks' payloads and the final result onto a queue that the
     returned generator drains in order. Events: ``progress`` (repeated),
-    ``route`` (once the router has decided), and on a search ``queries`` (once
-    Stage 2 starts searching) and ``evidence`` (once retrieval ends), then
-    exactly one of ``result`` / ``error``, then ``done``. A quiet stream gets a
-    ``: keepalive`` comment every ``heartbeat_s`` seconds.
+    ``route`` (once the router has decided, or the scope guard has refused),
+    and on a search ``queries`` (once Stage 2 starts searching) and
+    ``evidence`` (once retrieval ends), then exactly one of ``result`` /
+    ``error``, then ``done``. A quiet stream gets a ``: keepalive`` comment
+    every ``heartbeat_s`` seconds.
 
     The thread starts here rather than when the response starts streaming, so
     the run always finishes, and frees its slot, even if the client is gone.
@@ -363,7 +436,7 @@ def _self_check() -> None:
         evidence = {"query": request.query, "search_queries": ["q"], "papers": []}
         on_evidence(evidence)
         return {"action": "search", "answer": "No papers.", "query": request.query,
-                "language": "English", "evidence": evidence}
+                "language": "English", "stopped": False, "evidence": evidence}
 
     def boom_run(request: RunRequest, **_callbacks) -> Dict[str, Any]:
         raise RuntimeError("nope")
@@ -405,6 +478,12 @@ def _self_check() -> None:
     assert quiet[0] == ": keepalive\n\n", quiet
     assert [f.split("\n", 1)[0] for f in quiet[-2:]] == ["event: result", "event: done"]
 
+    # The sub-queries hook, over the real validator.
+    reported: List[List[str]] = []
+    librarian = WebLibrarianAgent(runtime_config=RUNTIME_CONFIG, on_queries=reported.append,
+                                  llm_client=object(), literature_source=object())
+    assert reported == [librarian._validate_queries(['"metformin" AND lifespan'])]
+
     # The routing hooks, over a scripted LLM and librarian.
     class ScriptedLlm:
         def __init__(self, *replies: str) -> None:
@@ -416,14 +495,11 @@ def _self_check() -> None:
             return self.replies.pop(0)
 
     class StubLibrarian:
-        last_run_debug: Dict[str, Any] = {}
-
         def run(self, query, max_loops=1, on_progress=None, progress_callback=None):
-            self.last_run_debug = {"search_queries": [f"{query} AND mice"]}
             paper = {"title": "T", "authors": "Chen X.", "year": "2023", "journal": "J",
                      "pmid": "1", "doi": "", "url": "https://europepmc.org/article/MED/1",
                      "evidence_snippets": ["s"]}
-            return [paper]
+            return RunResult([paper], {"search_queries": [f"{query} AND mice"]})
 
     seen: List[Any] = []
     history = [{"role": "user", "content": "Does metformin extend lifespan?"},
@@ -434,12 +510,13 @@ def _self_check() -> None:
     )
     agent = WebSynthesisAgent(librarian=StubLibrarian(), llm_client=llm,
                               on_route=seen.append, on_evidence=seen.append, on_progress=seen.append)
-    answer = agent.run("and in rats?", conversation_history=history)
-    assert "In rats too" in answer
+    result = agent.run("and in rats?", conversation_history=history)
+    assert "In rats too" in result.answer
     assert seen[0] == {"action": "search", "query": "metformin lifespan in rats", "language": "English"}
     assert seen[1]["papers"][0]["citation_key"] == "Chen 2023"
     assert seen[1]["search_queries"] == ["metformin lifespan in rats AND mice"]
     assert seen[2] == "Writing a cited answer"
+    assert result.debug["passages"][0]["citation_key"] == "Chen 2023"
     assert "Does metformin extend lifespan?" in llm.prompts[0]  # the router read the history
     assert "OUTPUT CHANNEL: web" in llm.prompts[1]
 
@@ -447,9 +524,21 @@ def _self_check() -> None:
     llm = ScriptedLlm('{"language": "English", "action": "reply", "answer": "It was Chen 2023."}')
     agent = WebSynthesisAgent(librarian=StubLibrarian(), llm_client=llm, on_route=seen.append,
                               on_evidence=seen.append)
-    assert agent.run("which paper said so?", conversation_history=history) == "It was Chen 2023."
+    result = agent.run("which paper said so?", conversation_history=history)
+    assert result.answer == "It was Chen 2023."
     assert seen == [{"action": "reply", "query": "which paper said so?", "language": "English"}]
-    assert agent.last_run_debug["action"] == "reply"
+    assert result.debug["action"] == "reply"
+
+    # The scope hook: a refused question is reported as a reply, and nothing else runs.
+    seen.clear()
+    guard_llm = ScriptedLlm('{"in_scope": false, "reply": "I help with research questions."}')
+    agent = WebSynthesisAgent(librarian=StubLibrarian(), llm_client=ScriptedLlm(),
+                              scope_guard=ZeroShotScopeGuard(llm_client=guard_llm),
+                              on_route=seen.append, on_evidence=seen.append, on_progress=seen.append)
+    result = agent.run("write me a poem")
+    assert result.answer == "I help with research questions."
+    assert result.debug["action"] == "stopped"
+    assert seen == ["Checking the question", {"action": "reply", "query": "write me a poem", "language": ""}]
 
     print("orchestrator self-check ok")
 

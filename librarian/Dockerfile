@@ -19,8 +19,10 @@ RUN useradd -m -u 1000 $USER
 
 WORKDIR $HOME/app
 COPY pyproject.toml uv.lock ./
-# With the cache extra, so LIBRARIAN_CACHE_DIR can turn the full-text cache on.
-RUN uv sync --frozen --no-dev --extra cache
+# With the cache extra, so LIBRARIAN_CACHE_DIR can turn the full-text cache on,
+# and the supplementary extra, so a request can ask for supplementary files.
+# Not docling: it pulls in PyTorch.
+RUN uv sync --frozen --no-dev --extra cache --extra supplementary
 
 # Runtime stage: the venv and the code the server needs, no uv.
 FROM python:3.12.14-slim-trixie

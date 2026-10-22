@@ -9,13 +9,14 @@
 # environment on first call, so a fresh install needs no separate setup step.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$HERE/../../.."
 step="${1:?usage: run.sh search --provider <claude|codex|antigravity> \"<question>\"}"
 shift
 # pyproject sets [tool.uv] package = false, so neither path below installs the
 # librarian package itself; the scripts import it from the checkout.
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 
 if [ -n "${LIBRARIAN_PYTHON:-}" ]; then
     exec "$LIBRARIAN_PYTHON" "$HERE/$step.py" "$@"
@@ -24,7 +25,7 @@ fi
 # (a desktop app, an agent session) may not have on PATH yet.
 PATH="$PATH:$HOME/.local/bin:$HOME/.cargo/bin"
 command -v uv >/dev/null || {
-    echo "run.sh: need uv (https://astral.sh/uv) or LIBRARIAN_PYTHON set to a Python with Librarian's dependencies." >&2
+    echo "run.sh: need uv. Calling agent: install uv using SKILL.md through the host's normal permission flow and retry, or reuse a provisioned interpreter with LIBRARIAN_PYTHON." >&2
     exit 127
 }
 exec uv run --project "$ROOT" python "$HERE/$step.py" "$@"

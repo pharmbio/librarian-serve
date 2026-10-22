@@ -14,7 +14,7 @@ What this relies on from ``librarian`` (run.sh puts the repo root on
 - the client contract ``chat_completion(messages, temperature, max_tokens) -> str``;
 - the reply keys the agent parses, ``queries`` and ``relevant_ids``, which the
   Codex/AGY schema in ``_direct_session.py`` hard-codes;
-- ``last_run_debug["search_queries"]`` and ``["paragraph_count"]``;
+- ``RunResult.debug["search_queries"]`` and ``["paragraph_count"]``;
 - ``citations.render_report`` and ``prompts/summarizer.md``.
 """
 
@@ -26,8 +26,9 @@ import tempfile
 import time
 from pathlib import Path
 
+from _direct_session import PROVIDERS, CliSessionError, _require_cli, run_direct_session
+
 import librarian
-from _direct_session import PROVIDERS, CliSessionError, run_direct_session
 from librarian import LibrarianAgent, load_runtime_config
 from librarian.citations import render_report
 
@@ -75,6 +76,9 @@ class CliClient:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", choices=PROVIDERS, required=True)
     parser.add_argument("query", help="the user's research question, verbatim")
@@ -83,15 +87,21 @@ def main() -> int:
     if not query:
         parser.error("query must not be empty")
 
+    try:
+        _require_cli(args.provider)
+    except CliSessionError as exc:
+        raise SystemExit(f"[Librarian] Model/CLI setup: {exc}") from None
+
     client = CliClient(args.provider)
     agent = LibrarianAgent(runtime_config=load_runtime_config(), llm_client=client)
     try:
-        evidence = agent.run(
+        result = agent.run(
             query, on_progress=lambda m: print(f"[Librarian] {m}", file=sys.stderr)
         )
     except CliSessionError as exc:
         # Query planning has no fallback, so its CLI failure ends the run.
         raise SystemExit(f"[Librarian] {exc}") from None
+    evidence = result.papers
     if client.errors:
         failed = f"{len(client.errors)} judge call(s) failed: " + " | ".join(
             dict.fromkeys(client.errors)
@@ -100,7 +110,7 @@ def main() -> int:
             # Every judge call failed: an empty report would read as "no papers".
             raise SystemExit(f"[Librarian] {failed}")
         print(f"[Librarian] WARNING: {failed} Evidence may be incomplete.", file=sys.stderr)
-    debug = agent.last_run_debug
+    debug = result.debug
     # paragraph_count is absent when the agent returns early on no paragraphs.
     queries, paragraphs = len(debug["search_queries"]), debug.get("paragraph_count", 0)
     print(f"[Librarian] queries={queries} paragraphs={paragraphs} relevant={len(evidence)}")
