@@ -1,8 +1,5 @@
 # Librarian on SciLifeLab Serve Platform
 
-> [!IMPORTANT]
-> This is a private repository. I did not make a fork or a branch because I was not sure that is what we want at the end. It will be made public later.
-
 > Our goal is to host an instance of EBML's Librarian on SciLifeLab Serve platform, with our locally hosted LLM and a user-friendly interface.
 
 ## Overview
